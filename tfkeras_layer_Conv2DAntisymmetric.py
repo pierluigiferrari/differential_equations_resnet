@@ -24,7 +24,8 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
     A custom tf.keras 2D convolutional layer with skew-centrosymmetric 3-by-3 kernels.
 
     This layer works just like a regular 2D convolutional layer, except that its
-    kernels take a particular form, namely they are skew-centrosymmetric.
+    kernels take a particular form, namely they are skew-centrosymmetric with respect
+    to their spatial dimensions (height and width).
 
     As is well-known, discrete convolution of a kernel with an input can be formulated
     as a matrix-vector multiplication where the convolution kernel is transformed
