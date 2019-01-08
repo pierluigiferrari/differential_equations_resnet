@@ -19,6 +19,9 @@ limitations under the License.
 
 from __future__ import division
 import tensorflow as tf
+import numpy as np
+
+from layers.tfkeras_layer_Conv2DAntisymmetric import Conv2DAntisymmetric
 
 def single_layer_identity_block(input_tensor,
                                 num_filters,
