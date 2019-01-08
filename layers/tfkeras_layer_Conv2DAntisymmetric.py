@@ -36,7 +36,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
     convolution matrix provides certain stability properties
     (see https://arxiv.org/abs/1705.03341).
 
-    This convolution layer underlies certain limitations:
+    This convolution layer underlies the following limitations:
 
         1. Strided convolution is not supported (necessary to ensuring
            that the convolution matrix is anti-symmetric)
@@ -51,6 +51,11 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
                  num_filters,
                  use_bias=True,
                  **kwargs):
+        '''
+        Arguments:
+            num_filters (int): The number of convolution filters to use.
+            use_bias (bool, optional): Whether or not to add a bias term.
+        '''
 
         super(Conv2DAntisymmetric, self).__init__(**kwargs)
         self.num_filters = num_filters
@@ -161,6 +166,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
         return (input_shape[0], input_shape[1], input_shape[2], self.num_filters)
 
     def get_config(self):
+
         config = {
             'num_filters': self.num_filters,
             'use_bias': self.use_bias,
@@ -169,9 +175,23 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
     def get_kernel(self):
+        '''
+        Return this layer's convolution kernel.
+
+        The Layer object's standard `get_weights()` method is inconvenient for this
+        layer because its kernel consists of multiple individual weights variables,
+        which the `get_weights()` method will return individually instead of as
+        one composed kernel. In order to retrieve the kernel, use this method
+        instead.
+        '''
 
         return tf.keras.backend.batch_get_value([self.kernel])[0]
 
     def get_bias(self):
+        '''
+        Return this layer's bias vector.
+
+        This method exists for the same reason as the `get_kernel()` method.
+        '''
 
         return tf.keras.backend.batch_get_value([self.bias])[0]
