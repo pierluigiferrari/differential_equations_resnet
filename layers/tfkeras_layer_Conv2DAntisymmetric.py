@@ -1,5 +1,5 @@
 '''
-A custom tf.keras 2D convolutional layer with skew-centrosymmetric 3-by-3 kernels.
+A custom tf.keras 2D convolutional layer with anti-centrosymmetric 3-by-3 kernels.
 
 Copyright (C) 2019 Pierluigi Ferrari
 
@@ -21,11 +21,18 @@ import tensorflow as tf
 
 class Conv2DAntisymmetric(tf.keras.layers.Layer):
     '''
-    A custom tf.keras 2D convolutional layer with skew-centrosymmetric 3-by-3 kernels.
+    A custom tf.keras 2D convolutional layer with anti-centrosymmetric 3-by-3 kernels.
 
     This layer works just like a regular 2D convolutional layer, except that its
-    kernels take a particular form, namely they are skew-centrosymmetric with respect
-    to their spatial dimensions (height and width).
+    kernels take a particular form, namely they are anti-centrosymmetric with respect
+    to their spatial dimensions (height and width). That is, the kernel takes the
+    following form along its spatial dimensions:
+
+    [[ a,  b,  c],
+     [ d,  0, -d],
+     [-c, -b, -a]],
+
+    where a, b, c, d are real numbers. The kernel is He-initialized.
 
     As is well-known, discrete convolution of a kernel with an input can be formulated
     as a matrix-vector multiplication where the convolution kernel is transformed
@@ -38,9 +45,9 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
     This convolution layer underlies the following limitations:
 
-        1. Strided convolution is not supported (necessary to ensuring
+        1. Strided convolution is not supported (necessary to ensure
            that the convolution matrix is anti-symmetric)
-        2. Dilated convolution is not supported (necessary to ensuring
+        2. Dilated convolution is not supported (necessary to ensure
            that the convolution matrix is anti-symmetric)
         3. Currently, only 3-by-3 kernels are supported (in general, any kernel
            size could be supported, but it involves some effort to support general
@@ -104,6 +111,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
                                  regularizer=None,
                                  trainable=self.trainable)
 
+        # 'e' constitutes the center element of the kernel, which must be zero and non-trainable.
         self.e = self.add_weight(name='e',
                                  shape=[1,1,in_channels,self.num_filters],
                                  dtype=dtype,
@@ -111,6 +119,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
                                  regularizer=None,
                                  trainable=False)
 
+        # The remaining elements of the kernel are just the additive inverses of the previous elements.
         self.f = -self.d
         self.g = -self.c
         self.h = -self.b
@@ -120,15 +129,12 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
         kernel_row1 = tf.concat(values=[self.a,self.b,self.c],
                                 axis=1,
                                 name='kernel_row1')
-
         kernel_row2 = tf.concat(values=[self.d,self.e,self.f],
                                 axis=1,
                                 name='kernel_row2')
-
         kernel_row3 = tf.concat(values=[self.g,self.h,self.i],
                                 axis=1,
                                 name='kernel_row3')
-
         self.kernel = tf.concat(values=[kernel_row1,
                                         kernel_row2,
                                         kernel_row3],
