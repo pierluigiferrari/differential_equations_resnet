@@ -436,15 +436,15 @@ def build_simplified_resnet(image_size,
     return model
 
 def build_single_block_resnet(image_size,
-                              architecture='antisymmetric',
+                              kernel_type='antisymmetric',
                               blocks_per_stage=[3, 4, 6, 3],
                               filters_per_block=[64, 128, 256, 512],
+                              include_top=True,
                               num_classes=None,
                               use_batch_norm=False,
                               use_max_pooling=[False, False, False, False],
                               subtract_mean=None,
-                              divide_by_stddev=None,
-                              include_top=True):
+                              divide_by_stddev=None):
     '''
     Build a ResNet with in which each ResNet block has only one convolutional layer. The overall ResNet is composed
     of five stages of ResNet blocks. Each stage consists of one or more identical blocks.
@@ -452,13 +452,16 @@ def build_single_block_resnet(image_size,
     Arguments:
         image_size (tuple): A tuple `(height, width, channels)` of three integers representing the size
             and number of channels of the image input.
-        architecture (str, optional): If 'antisymmetric', will build a ResNet in which
+        kernel_type (str, optional): If 'antisymmetric', will build a ResNet in which
             all 3-by-3 convolution kernels are anti-centrosymmetric.
         blocks_per_stage (tuple, optional): A tuple of four positive integers representing the number of
             ResNet blocks for the stages 2, 3, 4, and 5 of the ResNet.
         filters_per_block (tuple, optional): A tuple of four positive integers representing the number of
             filters to be used for the convolutional layers of the blocks in each of the stages 2, 3, 4, and 5
             of the ResNet.
+        include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
+            Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
+            by a softmax activation ayer will be added, the output of the latter of which will be the model output.
         num_classes (int, optional): The number of classes for classification. Only relevant if `inclue_top`
             is `True`.
         use_batch_norm (bool, optional): If `True`, adds a batch normalization layer
@@ -473,9 +476,6 @@ def build_single_block_resnet(image_size,
             floating point values of any shape that is broadcast-compatible with the image shape. The image pixel
             intensity values will be divided by the elements of this array. For example, pass a list
             of three integers to perform per-channel standard deviation normalization for color images.
-        include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
-            Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
-            by a softmax activation ayer will be added, the output of the latter of which will be the model output.
     '''
 
     if include_top and (num_classes is None):
@@ -485,7 +485,7 @@ def build_single_block_resnet(image_size,
 
     name = 'single_block_resnet'
 
-    if architecture == 'antisymmetric':
+    if kernel_type == 'antisymmetric':
         antisymmetric = True
         name += '_antisymmetric'
     else:
