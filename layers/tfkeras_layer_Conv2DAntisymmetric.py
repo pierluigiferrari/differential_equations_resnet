@@ -45,7 +45,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
     This convolution layer underlies the following limitations:
 
-        1. Strided convolution is not supported (necessary to ensure
+        1. Strided convolution is not recommended (necessary to ensure
            that the convolution matrix is anti-symmetric)
         2. Dilated convolution is not supported (necessary to ensure
            that the convolution matrix is anti-symmetric)
@@ -57,16 +57,20 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
     def __init__(self,
                  num_filters,
                  use_bias=True,
+                 strides=(1,1),
                  **kwargs):
         '''
         Arguments:
             num_filters (int): The number of convolution filters to use.
             use_bias (bool, optional): Whether or not to add a bias term.
+            strides (tuple, optional): The strides along the height and width dimensions
+                for the convolution.
         '''
 
         super(Conv2DAntisymmetric, self).__init__(**kwargs)
         self.num_filters = num_filters
         self.use_bias = use_bias
+        self.strides = strides
 
     def build(self, input_shape):
 
@@ -155,7 +159,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
         output_tensor = tf.nn.conv2d(input_tensor,
                                      self.kernel,
-                                     strides=[1, 1, 1, 1],
+                                     strides=[1, self.strides[0], self.strides[1], 1],
                                      padding="SAME",
                                      use_cudnn_on_gpu=True,
                                      data_format='NHWC',
