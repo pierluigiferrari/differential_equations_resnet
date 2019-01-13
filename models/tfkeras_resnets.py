@@ -20,7 +20,7 @@ from __future__ import division
 import tensorflow as tf
 import numpy as np
 
-from tf.keras.layers import Conv2D, BatchNormalization, add, Activation, Input, Lambda, MaxPooling2D, GlobalAveragePooling2D, Dense, ZeroPadding2D
+from tensorflow.keras.layers import Conv2D, BatchNormalization, add, Activation, Input, Lambda, MaxPooling2D, GlobalAveragePooling2D, Dense, ZeroPadding2D
 
 from layers.tfkeras_layer_Conv2DAntisymmetric import Conv2DAntisymmetric
 
@@ -441,7 +441,7 @@ def build_single_block_resnet(image_size,
                               filters_per_block=[64, 128, 256, 512],
                               num_classes=None,
                               use_batch_norm=False,
-                              use_max_pooling=False,
+                              use_max_pooling=[False, False, False, False],
                               subtract_mean=None,
                               divide_by_stddev=None,
                               include_top=True):
@@ -463,8 +463,8 @@ def build_single_block_resnet(image_size,
             is `True`.
         use_batch_norm (bool, optional): If `True`, adds a batch normalization layer
             after each convolutional layer.
-        use_max_pooling (bool, optional): If `True`, adds max pooling after the stages 1, 2, 3, and 4.
-            If `False`, no pooling is performed apart from the global average pooling at the end of the network.
+        use_max_pooling (tuple, optional): A tuple of four booleans which define whether max pooling is being
+            performed after the stages 1, 2, 3, and 4, respectively.
         subtract_mean (array-like, optional): `None` or an array-like object of integers or floating point values
             of any shape that is broadcast-compatible with the image shape. The elements of this array will be
             subtracted from the image pixel intensity values. For example, pass a list of three integers
@@ -535,7 +535,7 @@ def build_single_block_resnet(image_size,
     if use_batch_norm:
         x = BatchNormalization(axis=3, name='bn_conv1')(x)
     x = Activation('relu')(x)
-    if use_max_pooling:
+    if use_max_pooling[0]:
         x = ZeroPadding2D(padding=(1,1), name='pool1_pad')(x)
         x = MaxPooling2D(pool_size=(3,3), strides=(2,2), name='stage1_pooling')(x)
 
@@ -543,21 +543,21 @@ def build_single_block_resnet(image_size,
     x = single_layer_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block='a')
     for i in range(ord('b'), ord('b') + blocks_per_stage[0] - 1):
         x = single_layer_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=chr(i))
-    if use_max_pooling:
+    if use_max_pooling[1]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage2_pooling')(x)
 
     # Stage 3
     x = single_layer_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block='a')
     for i in range(ord('b'), ord('b') + blocks_per_stage[1] - 1):
         x = single_layer_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=chr(i))
-    if use_max_pooling:
+    if use_max_pooling[2]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage3_pooling')(x)
 
     # Stage 4
     x = single_layer_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block='a')
     for i in range(ord('b'), ord('b') + blocks_per_stage[2] - 1):
         x = single_layer_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=chr(i))
-    if use_max_pooling:
+    if use_max_pooling[3]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage4_pooling')(x)
 
     # Stage 5
@@ -668,7 +668,8 @@ def build_resnet(image_size,
                padding='valid',
                kernel_initializer='he_normal',
                name='conv1')(x)
-    x = BatchNormalization(axis=3, name='bn_conv1')(x)
+    if use_batch_norm:
+        x = BatchNormalization(axis=3, name='bn_conv1')(x)
     x = Activation('relu')(x)
     x = ZeroPadding2D(padding=(1, 1), name='pool1_pad')(x)
     x = MaxPooling2D(pool_size=(3, 3), strides=(2, 2), name='stage1_pooling')(x)
