@@ -575,17 +575,18 @@ def build_single_block_resnet(image_size,
     return model
 
 def build_resnet(image_size,
-                 architecture='antisymmetric',
+                 kernel_type='antisymmetric',
+                 include_top=True,
+                 num_classes=None,
+                 subtract_mean=None,
+                 divide_by_stddev=None,
+                 preset=None,
                  blocks_per_stage=[3, 4, 6, 3],
                  filters_per_block=[[64, 64, 256],
                                     [128, 128, 512],
                                     [256, 256, 1024],
                                     [512, 512, 2048]],
-                 num_classes=None,
-                 use_batch_norm=False,
-                 subtract_mean=None,
-                 divide_by_stddev=None,
-                 include_top=True):
+                 use_batch_norm=True):
     '''
     Build a ResNet with the regular bottleneck block architecture. The overall ResNet is composed
     of five stages of ResNet blocks. Each stage consists of one or more identical blocks.
@@ -593,20 +594,13 @@ def build_resnet(image_size,
     Arguments:
         image_size (tuple): A tuple `(height, width, channels)` of three integers representing the size
             and number of channels of the image input.
-        architecture (str, optional): If 'antisymmetric', will build a ResNet in which
+        kernel_type (str, optional): If 'antisymmetric', will build a ResNet in which
             all 3-by-3 convolution kernels are anti-centrosymmetric.
-        blocks_per_stage (tuple, optional): A tuple of four positive integers representing the number of
-            ResNet blocks for the stages 2, 3, 4, and 5 of the ResNet. The default configuration produces
-            a ResNet50. To produce a ResNet101 or ResNet152, use the configurations `[3, 4, 23, 3]` and
-            `[3, 8, 36, 3]`, respectively.
-        filters_per_block (tuple, optional): A tuple of four 3-tuples. The four tuples represent the number of
-            filters to be used for the convolutional layers of the blocks in each of the stages 2, 3, 4, and 5
-            of the ResNet. Each 3-tuple defines the number of filters to be used for the three convolutional
-            layers (1-by-1, 3-by-3, 1-by-1) of the blocks in the respective stage.
+        include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
+            Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
+            by a softmax activation ayer will be added, the output of the latter of which will be the model output.
         num_classes (int, optional): The number of classes for classification. Only relevant if `inclue_top`
             is `True`.
-        use_batch_norm (bool, optional): If `True`, adds a batch normalization layer
-            after each convolutional layer.
         subtract_mean (array-like, optional): `None` or an array-like object of integers or floating point values
             of any shape that is broadcast-compatible with the image shape. The elements of this array will be
             subtracted from the image pixel intensity values. For example, pass a list of three integers
@@ -615,24 +609,63 @@ def build_resnet(image_size,
             floating point values of any shape that is broadcast-compatible with the image shape. The image pixel
             intensity values will be divided by the elements of this array. For example, pass a list
             of three integers to perform per-channel standard deviation normalization for color images.
-        include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
-            Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
-            by a softmax activation ayer will be added, the output of the latter of which will be the model output.
+        preset (str, optional): Must be either one of 'resnet50', 'resnet101', and 'resnet152', in which case
+            the respective ResNet architecture will be built, or `None` in which case no preset will be used.
+            If a preset is passed, then all of the subsequent arguments will be overwritten by the preset, i.e.
+            their passed values become irrelevant.
+        blocks_per_stage (tuple, optional): A tuple of four positive integers representing the number of
+            ResNet blocks for the stages 2, 3, 4, and 5 of the ResNet. The default configuration produces
+            a ResNet50. To produce a ResNet101 or ResNet152, use the configurations `[3, 4, 23, 3]` and
+            `[3, 8, 36, 3]`, respectively.
+        filters_per_block (tuple, optional): A tuple of four 3-tuples. The four tuples represent the number of
+            filters to be used for the convolutional layers of the blocks in each of the stages 2, 3, 4, and 5
+            of the ResNet. Each 3-tuple defines the number of filters to be used for the three convolutional
+            layers (1-by-1, 3-by-3, 1-by-1) of the blocks in the respective stage.
+        use_batch_norm (bool, optional): If `True`, adds a batch normalization layer directly
+            after each convolutional layer.
     '''
 
     if include_top and (num_classes is None):
         raise ValueError("You must pass a positive integer for `num_classes` if `include_top` is `True`.")
 
-    img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
-
     name = 'resnet'
 
-    if architecture == 'antisymmetric':
+    if not (preset is None):
+        if preset == 'resnet50':
+            blocks_per_stage = [3, 4, 6, 3]
+            filters_per_block = [[64, 64, 256],
+                                 [128, 128, 512],
+                                 [256, 256, 1024],
+                                 [512, 512, 2048]]
+            use_batch_norm = True
+            name += '50'
+        elif preset == 'resnet101':
+            blocks_per_stage = [3, 4, 23, 3]
+            filters_per_block = [[64, 64, 256],
+                                 [128, 128, 512],
+                                 [256, 256, 1024],
+                                 [512, 512, 2048]]
+            use_batch_norm = True
+            name += '101'
+        elif preset == 'resnet152':
+            blocks_per_stage = [3, 8, 36, 3]
+            filters_per_block = [[64, 64, 256],
+                                 [128, 128, 512],
+                                 [256, 256, 1024],
+                                 [512, 512, 2048]]
+            use_batch_norm = True
+            name += '152'
+        else:
+            raise ValueError("`preset` must be either `None` or one of 'resnet50', 'resnet101', and 'resnet152', but you passed `preset={}`.".format(preset))
+
+    if kernel_type == 'antisymmetric':
         antisymmetric = True
         name += '_antisymmetric'
     else:
         antisymmetric = False
         name += '_regular'
+
+    img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
 
     ############################################################################
     # Define functions for the Lambda layers below.
