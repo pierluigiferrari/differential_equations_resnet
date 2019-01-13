@@ -45,18 +45,17 @@ def single_layer_identity_block(input_tensor,
         use_batch_norm (bool): If `True`, the convolution layer will be followed by a batch normalization
             layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
-            Usually, a new stage begins after every pooling layer, i.e. whenever the spatial
-            dimensions (height and width) of the convolutional feature map change.
-        block (str): The label of the current block within the current stage. Used for
-            the generation of the layer names. Usually, ResNet blocks within a stage will be labeled
-            'a', 'b', 'c', etc.
+            Usually, a new stage begins whenever the spatial dimensions (height and width) of the
+            convolutional feature map change.
+        block (int): The number of the current block within the current stage. Used for
+            the generation of the layer names.
 
     Returns:
         The output tensor for the block.
     '''
 
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    conv_name_base = 'res' + str(stage) + '_' + str(block) + '_branch'
+    bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
     if antisymmetric:
         x = Conv2DAntisymmetric(num_filters=num_filters,
@@ -103,18 +102,17 @@ def bottleneck_identity_block(input_tensor,
         use_batch_norm (bool): If `True`, each convolutional layer of this block will be followed by
             a batch normalization layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
-            Usually, a new stage begins after every pooling layer, i.e. whenever the spatial
-            dimensions (height and width) of the convolutional feature map change.
-        block (str): The label of the current block within the current stage. Used for
-            the generation of the layer names. Usually, ResNet blocks within a stage will be labeled
-            'a', 'b', 'c', etc.
+            Usually, a new stage begins whenever the spatial dimensions (height and width) of the
+            convolutional feature map change.
+        block (int): The number of the current block within the current stage. Used for
+            the generation of the layer names.
 
     Returns:
         The output tensor for the block.
     '''
 
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    conv_name_base = 'res' + str(stage) + '_' + str(block) + '_branch'
+    bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
     ############################################################################
     #                                1-by-1
@@ -190,18 +188,17 @@ def single_layer_conv_block(input_tensor,
         use_batch_norm (bool): If `True`, the convolution layer will be followed by a batch normalization
             layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
-            Usually, a new stage begins after every pooling layer, i.e. whenever the spatial
-            dimensions (height and width) of the convolutional feature map change.
-        block (str): The label of the current block within the current stage. Used for
-            the generation of the layer names. Usually, ResNet blocks within a stage will be labeled
-            'a', 'b', 'c', etc.
+            Usually, a new stage begins whenever the spatial dimensions (height and width) of the
+            convolutional feature map change.
+        block (int): The number of the current block within the current stage. Used for
+            the generation of the layer names.
 
     Returns:
         The output tensor for the block.
     '''
 
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    conv_name_base = 'res' + str(stage) + '_' + str(block) + '_branch'
+    bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
     if antisymmetric:
         x = Conv2DAntisymmetric(num_filters=num_filters,
@@ -238,6 +235,7 @@ def bottleneck_conv_block(input_tensor,
                           use_batch_norm,
                           stage,
                           block,
+                          version=1,
                           strides=(1,1)):
     '''
     Create a regular ResNet bottleneck conv block that consists of three consecutive convolutional
@@ -259,20 +257,45 @@ def bottleneck_conv_block(input_tensor,
         use_batch_norm (bool): If `True`, each convolutional layer of this block will be followed by
             a batch normalization layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
-            Usually, a new stage begins after every pooling layer, i.e. whenever the spatial
-            dimensions (height and width) of the convolutional feature map change.
-        block (str): The label of the current block within the current stage. Used for
-            the generation of the layer names. Usually, ResNet blocks within a stage will be labeled
-            'a', 'b', 'c', etc.
+            Usually, a new stage begins whenever the spatial dimensions (height and width) of the
+            convolutional feature map change.
+        block (int): The number of the current block within the current stage. Used for
+            the generation of the layer names.
+        version (float, optional): A value from the set {1, 1.5}, the version of the ResNet.
+            The different versions are defined as follows:
+
+            v1: The striding of the conv block is performed by the first 1-by-1 convolution.
+                The order of operations of each convolutional layer is (conv, BN, ReLU).
+            v1.5: The striding of the conv block is performed by the 3-by-3 convolution.
+                The order of operations of each convolutional layer is (conv, BN, ReLU).
+            v2 (currently not supported): The striding of the conv block is performed by
+                the first 3-by-3 convolution. The order of operations of each convolutional layer
+                is (BN, ReLU, conv).
+
+            The reasoning for introducing v1.5 is that is has been reported that performing the
+            striding (i.e. the spatial dimensionality reduction) in the 3-by-3 convolution instead
+            of the 1-by-1 convolution results in higher and more stable accuracy in fewer epochs
+            than the original v1 and has shown to scale to higher batch sizes with minimal degradation
+            in accuracy. However, it has also been reported that v1.5 requires ~12% more compute to
+            train and has 6% reduced throughput for inference compared to v1.
         strides (tuple, optional): The spatial strides for the first 1-by-1 convolutional layer
-            of this block.
+            (v1) or the 3-by-3 convolutional layer (v1.5) of this block.
 
     Returns:
         The output tensor for the block.
     '''
 
-    conv_name_base = 'res' + str(stage) + block + '_branch'
-    bn_name_base = 'bn' + str(stage) + block + '_branch'
+    if version == 1:
+        strides_1_by_1 = strides
+        strides_3_by_3 = (1,1)
+    elif version == 1.5:
+        strides_1_by_1 = (1,1)
+        strides_3_by_3 = strides
+    else:
+        raise ValueError("Supported values for `version` are 1 and 1.5.")
+
+    conv_name_base = 'res' + str(stage) + '_' + str(block) + '_branch'
+    bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
     ############################################################################
     #                                1-by-1
@@ -280,7 +303,7 @@ def bottleneck_conv_block(input_tensor,
 
     x = Conv2D(filters=num_filters[0],
                kernel_size=(1,1),
-               strides=strides,
+               strides=strides_1_by_1,
                kernel_initializer='he_normal',
                name=conv_name_base + '2a')(input_tensor)
     if use_batch_norm:
@@ -296,10 +319,12 @@ def bottleneck_conv_block(input_tensor,
         x = Conv2DAntisymmetric(num_filters=num_filters[1],
                                 trainable=True,
                                 use_bias=True,
+                                strides=strides_3_by_3,
                                 name=conv_name_base + '2')(x)
     else:
         x = Conv2D(filters=num_filters[1],
                    kernel_size=(3,3),
+                   strides=strides_3_by_3,
                    padding='same',
                    kernel_initializer='he_normal',
                    name=conv_name_base + '2b')(x)
@@ -341,99 +366,6 @@ def bottleneck_conv_block(input_tensor,
     x = Activation('relu')(x)
 
     return x
-
-def build_simplified_resnet(image_size,
-                            num_classes,
-                            architecture='antisymmetric',
-                            use_batch_norm=False,
-                            use_max_pooling=False,
-                            subtract_mean=None,
-                            divide_by_stddev=None,
-                            include_top=True):
-    '''
-    Build a simplified ResNet for image classification in which each ResNet block
-    has only one convolutional layer.
-
-    Arguments:
-        num_classes (int): The number of classes for classification.
-        architecture (str, optional): If 'antisymmetric', will build a ResNet with
-            anti-centrosymmetric convolution kernels.
-        use_batch_norm (bool, optional): If `True`, adds a batch normalization layer
-            after each convolutional layer.
-        use_max_pooling (bool, optional): If `True`, adds max pooling after certain
-            blocks. If `False`, no pooling is performed.
-        subtract_mean (array-like, optional): `None` or an array-like object of integers or floating point values
-            of any shape that is broadcast-compatible with the image shape. The elements of this array will be
-            subtracted from the image pixel intensity values. For example, pass a list of three integers
-            to perform per-channel mean normalization for color images.
-        divide_by_stddev (array-like, optional): `None` or an array-like object of non-zero integers or
-            floating point values of any shape that is broadcast-compatible with the image shape. The image pixel
-            intensity values will be divided by the elements of this array. For example, pass a list
-            of three integers to perform per-channel standard deviation normalization for color images.
-        include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
-            Otherwise, an average pooling layer and a fully connected layer followed by a softmax activation
-            layer will be added, the output of the latter of which will be the model output.
-    '''
-
-    img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
-
-    if architecture == 'antisymmetric':
-        antisymmetric = True
-        name = 'simplified_resnet_antisymmetric'
-    else:
-        antisymmetric = False
-        name = 'simplified_resnet_regular'
-
-    ############################################################################
-    # Define functions for the Lambda layers below.
-    ############################################################################
-
-    def identity_layer(tensor):
-        return tensor
-
-    def input_mean_shift(tensor):
-        return tensor - np.array(subtract_mean)
-
-    def input_stddev_normalization(tensor):
-        return tensor / np.array(divide_by_stddev)
-
-    ############################################################################
-    # Build the network.
-    ############################################################################
-
-    input_tensor = Input(shape=(img_height, img_width, img_channels))
-
-    # The following identity layer is only needed so that the subsequent lambda layers can be optional.
-    x1 = Lambda(identity_layer, output_shape=(img_height, img_width, img_channels), name='identity_layer')(input_tensor)
-    if not (subtract_mean is None):
-        x1 = Lambda(input_mean_shift, output_shape=(img_height, img_width, img_channels), name='input_mean_normalization')(x1)
-    if not (divide_by_stddev is None):
-        x1 = Lambda(input_stddev_normalization, output_shape=(img_height, img_width, img_channels), name='input_stddev_normalization')(x1)
-
-    # Stage 1
-    x = single_layer_conv_block(x1, 16, antisymmetric, use_batch_norm, stage=1, block='a')
-    x = single_layer_identity_block(x, 16, antisymmetric, use_batch_norm, stage=1, block='b')
-    x = single_layer_conv_block(x, 24, antisymmetric, use_batch_norm, stage=1, block='c')
-    x = single_layer_identity_block(x, 24, antisymmetric, use_batch_norm, stage=1, block='d')
-
-    if use_max_pooling:
-        # Stage 1 Pooling
-        x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage1_pooling')(x)
-
-    # Stage 2
-    x = single_layer_conv_block(x, 32, antisymmetric, use_batch_norm, stage=2, block='a')
-    x = single_layer_identity_block(x, 32, antisymmetric, use_batch_norm, stage=2, block='b')
-    x = single_layer_conv_block(x, 24, antisymmetric, use_batch_norm, stage=2, block='c')
-    x = single_layer_identity_block(x, 24, antisymmetric, use_batch_norm, stage=2, block='d')
-
-    if include_top:
-        x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation='softmax', name='fc')(x)
-
-    # Create the model.
-    model = tf.keras.models.Model(input_tensor, x, name=name)
-
-    return model
 
 def build_single_block_resnet(image_size,
                               kernel_type='antisymmetric',
@@ -540,30 +472,30 @@ def build_single_block_resnet(image_size,
         x = MaxPooling2D(pool_size=(3,3), strides=(2,2), name='stage1_pooling')(x)
 
     # Stage 2
-    x = single_layer_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block='a')
-    for i in range(ord('b'), ord('b') + blocks_per_stage[0] - 1):
-        x = single_layer_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=chr(i))
+    x = single_layer_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0)
+    for i in range(1, blocks_per_stage[0]):
+        x = single_layer_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i)
     if use_max_pooling[1]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage2_pooling')(x)
 
     # Stage 3
-    x = single_layer_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block='a')
-    for i in range(ord('b'), ord('b') + blocks_per_stage[1] - 1):
-        x = single_layer_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=chr(i))
+    x = single_layer_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0)
+    for i in range(1, blocks_per_stage[1]):
+        x = single_layer_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i)
     if use_max_pooling[2]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage3_pooling')(x)
 
     # Stage 4
-    x = single_layer_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block='a')
-    for i in range(ord('b'), ord('b') + blocks_per_stage[2] - 1):
-        x = single_layer_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=chr(i))
+    x = single_layer_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0)
+    for i in range(1, blocks_per_stage[2]):
+        x = single_layer_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i)
     if use_max_pooling[3]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage4_pooling')(x)
 
     # Stage 5
-    x = single_layer_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block='a')
-    for i in range(ord('b'), ord('b') + blocks_per_stage[3] - 1):
-        x = single_layer_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=chr(i))
+    x = single_layer_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0)
+    for i in range(1, blocks_per_stage[3]):
+        x = single_layer_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i)
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
@@ -580,6 +512,7 @@ def build_resnet(image_size,
                  num_classes=None,
                  subtract_mean=None,
                  divide_by_stddev=None,
+                 version=1,
                  preset=None,
                  blocks_per_stage=[3, 4, 6, 3],
                  filters_per_block=[[64, 64, 256],
@@ -609,6 +542,23 @@ def build_resnet(image_size,
             floating point values of any shape that is broadcast-compatible with the image shape. The image pixel
             intensity values will be divided by the elements of this array. For example, pass a list
             of three integers to perform per-channel standard deviation normalization for color images.
+        version (float, optional): A value from the set {1, 1.5}, the version of the ResNet.
+            The different versions are defined as follows:
+
+            v1: The striding of the conv block is performed by the first 1-by-1 convolution.
+                The order of operations of each convolutional layer is (conv, BN, ReLU).
+            v1.5: The striding of the conv block is performed by the 3-by-3 convolution.
+                The order of operations of each convolutional layer is (conv, BN, ReLU).
+            v2 (currently not supported): The striding of the conv block is performed by
+                the first 3-by-3 convolution. The order of operations of each convolutional layer
+                is (BN, ReLU, conv).
+
+            The reasoning for introducing v1.5 is that is has been reported that performing the
+            striding (i.e. the spatial dimensionality reduction) in the 3-by-3 convolution instead
+            of the 1-by-1 convolution results in higher and more stable accuracy in fewer epochs
+            than the original v1 and has shown to scale to higher batch sizes with minimal degradation
+            in accuracy. However, it has also been reported that v1.5 requires ~12% more compute to
+            train and has 6% reduced throughput for inference compared to v1.
         preset (str, optional): Must be either one of 'resnet50', 'resnet101', and 'resnet152', in which case
             the respective ResNet architecture will be built, or `None` in which case no preset will be used.
             If a preset is passed, then all of the subsequent arguments will be overwritten by the preset, i.e.
@@ -708,24 +658,24 @@ def build_resnet(image_size,
     x = MaxPooling2D(pool_size=(3, 3), strides=(2, 2), name='stage1_pooling')(x)
 
     # Stage 2
-    x = bottleneck_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block='a', strides=(1,1))
-    for i in range(ord('b'), ord('b') + blocks_per_stage[0] - 1):
-        x = bottleneck_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=chr(i))
+    x = bottleneck_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, version=version, strides=(1,1))
+    for i in range(1, blocks_per_stage[0]):
+        x = bottleneck_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i)
 
     # Stage 3
-    x = bottleneck_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block='a', strides=(2,2))
-    for i in range(ord('b'), ord('b') + blocks_per_stage[1] - 1):
-        x = bottleneck_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=chr(i))
+    x = bottleneck_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, version=version, strides=(2,2))
+    for i in range(1, blocks_per_stage[1]):
+        x = bottleneck_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i)
 
     # Stage 4
-    x = bottleneck_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block='a', strides=(2,2))
-    for i in range(ord('b'), ord('b') + blocks_per_stage[2] - 1):
-        x = bottleneck_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=chr(i))
+    x = bottleneck_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, version=version, strides=(2,2))
+    for i in range(1, blocks_per_stage[2]):
+        x = bottleneck_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i)
 
     # Stage 5
-    x = bottleneck_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block='a', strides=(2,2))
-    for i in range(ord('b'), ord('b') + blocks_per_stage[3] - 1):
-        x = bottleneck_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=chr(i))
+    x = bottleneck_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, version=version, strides=(2,2))
+    for i in range(1, blocks_per_stage[3]):
+        x = bottleneck_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i)
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
