@@ -19,15 +19,24 @@ limitations under the License.
 from __future__ import division
 import tensorflow as tf
 import os
+import sys
 import glob
 import random
+from tqdm import trange
+from math import ceil
 
 class TFRecordGenerator:
 
     def __init__(self):
         pass
 
-    def convert(self, directory, tfrecord_file_name, suffix='tfrecord', num_files_per_record=1000, shuffle=True):
+    def convert(self,
+                directory,
+                tfrecord_file_name,
+                suffix='tfrecord',
+                num_files_per_record=1000,
+                shuffle=True,
+                encode_image_shape=False):
 
         image_paths = get_image_paths(get_subdirectories(directory))
 
@@ -35,41 +44,65 @@ class TFRecordGenerator:
             random.shuffle(image_paths)
 
         num_files_total = len(image_paths)
+        num_tfrecords = ceil(num_files_total / num_files_per_record)
         start = 0
-        end = num_files_per_record
         tfrecord_file_number = 0
 
         while start < num_files_total:
+            num_files_remaining = num_files_total - start
+            batch_size = num_files_per_record if (num_files_remaining >= num_files_per_record) else num_files_remaining
             with tf.python_io.TFRecordWriter(tfrecord_file_name + '_{:04d}.{}'.format(tfrecord_file_number, suffix)) as writer:
-                for image_path in image_paths[start:end]:
-                    example = self._convert_image(image_path) # This is an instance of tf.Example
+                for i in trange(batch_size, desc="Creating TFRecord file {}/{}".format(tfrecord_file_number+1, num_tfrecords), file=sys.stdout):
+                    example = self._convert_sample(image_paths[start+i], encode_image_shape) # This is an instance of tf.Example
                     writer.write(example.SerializeToString())
-            start = end
-            end += num_files_per_record
+            start += num_files_per_record
             tfrecord_file_number += 1
 
-    def _convert_image(self, image_path):
+    def _convert_sample(self, image_path, encode_image_shape=False):
 
-        label = get_image_class_from_file_name(image_path)
-        image_shape = mpimg.imread(image_path).shape
-        if len(image_shape) == 2:
-            image_shape += (1,)
+        # Convert the image.
+        image_feature = self._convert_image(image_path, encode_image_shape)
+
+        # Convert the label.
+        label_feature = self._convert_image_class_from_file_name(image_path)
+
+        return tf.train.Example(features = tf.train.Features(feature = {**image_feature, **label_feature}))
+
+    def _convert_image(self, image_path, encode_image_shape=False):
+        '''
+        Converts an image and returns a dictionary of `tf.train.Feature` objects,
+        which is the input to `tf.train.Features`.
+        '''
+
         file_name = os.path.basename(image_path)
 
         # Read a byte representation of the image.
         with tf.gfile.GFile(image_path, 'rb') as fid:
-            image_data = fid.read()
+            image = fid.read()
 
-        example = tf.train.Example(features = tf.train.Features(feature = {
-            'filename': tf.train.Feature(bytes_list = tf.train.BytesList(value = [file_name.encode('utf-8')])),
-            'rows': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[0]])),
-            'cols': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[1]])),
-            'channels': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[2]])),
-            'image': tf.train.Feature(bytes_list = tf.train.BytesList(value = [image_data])),
-            'label': tf.train.Feature(int64_list = tf.train.Int64List(value = [label])),
-        }))
+        if encode_image_shape:
+            image_shape = mpimg.imread(image_path).shape
+            if len(image_shape) == 2:
+                image_shape += (1,)
+            return {
+                'image': tf.train.Feature(bytes_list = tf.train.BytesList(value = [image])),
+                'filename': tf.train.Feature(bytes_list = tf.train.BytesList(value = [file_name.encode('utf-8')])),
+                'height': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[0]])),
+                'width': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[1]])),
+                'channels': tf.train.Feature(int64_list = tf.train.Int64List(value = [image_shape[2]]))
+            }
 
-        return example
+        return {
+            'image': tf.train.Feature(bytes_list = tf.train.BytesList(value = [image])),
+            'filename': tf.train.Feature(bytes_list = tf.train.BytesList(value = [file_name.encode('utf-8')]))
+        }
+
+    def _convert_image_class_from_file_name(self, image_path):
+
+        label = get_image_class_from_file_name(image_path)
+        return {
+            'label': tf.train.Feature(int64_list = tf.train.Int64List(value = [label]))
+        }
 
 def get_subdirectories(directory, include_top=True):
     '''
