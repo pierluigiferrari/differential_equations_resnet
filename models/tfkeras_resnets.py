@@ -167,7 +167,7 @@ def bottleneck_identity_block(input_tensor,
                bias_regularizer=bias_regularizer,
                name=conv_name_base + '2c')(x)
     if use_batch_norm:
-        BatchNormalization(axis=3, name=bn_name_base + '2c')(x)
+        x = BatchNormalization(axis=3, name=bn_name_base + '2c')(x)
 
     ############################################################################
     #                                fusion
@@ -369,8 +369,8 @@ def bottleneck_conv_block(input_tensor,
                bias_regularizer=bias_regularizer,
                name=conv_name_base + '2c')(x)
     if use_batch_norm:
-        BatchNormalization(axis=3,
-                           name=bn_name_base + '2c')(x)
+        x = BatchNormalization(axis=3,
+                               name=bn_name_base + '2c')(x)
 
     ############################################################################
     #                                shortcut
