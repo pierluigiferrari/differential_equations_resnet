@@ -89,8 +89,7 @@ class TFRecordDatasetCreator:
             dataset = dataset.batch(self.batch_size)
 
             iterator = dataset.make_one_shot_iterator()
-            batch = iterator.get_next()
-            return batch
+            return iterator
 
         return _input_function
 
