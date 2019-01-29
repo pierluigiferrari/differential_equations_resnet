@@ -37,6 +37,8 @@ class Training:
     def __init__(self,
                  model,
                  optimizer,
+                 train_dataset,
+                 val_dataset=None,
                  summaries=['mean_gradient_norms']):
         '''
         Arguments:
@@ -55,8 +57,16 @@ class Training:
         if not isinstance(optimizer, tf.train.Optimizer:
             raise ValueError("The model you passed is not an instance of tf.train.Optimizer or a subclass thereof.")
 
+        if not isinstance(train_dataset, tf.data.Dataset):
+            raise ValueError("train_dataset must be a tf.data.Dataset object.")
+
+        if (not (val_dataset is None)) and (not isinstance(val_dataset, tf.data.Dataset)):
+            raise ValueError("val_dataset must be a tf.data.Dataset object.")
+
         self.model = model
         self.optimizer = optimizer
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
         self.summaries = summaries
 
         self.variables_updated = False # Keep track of whether any variable values changed since this model was last saved.
@@ -83,7 +93,13 @@ class Training:
 
         self.inputs = model.inputs[0]
         self.outputs = model.outpus[0]
-        self.labels = tf.placeholder(dtype=tf.int32, shape=[None, None, None, self.num_classes], name='labels_input')
+
+        # Connect the datasets to the model.
+        if not (self.val_dataset is None):
+            self.features, self.labels, self.model_output, self.iterator, self.train_iterator_init_op, self.val_iterator_init_op = self._build_data_input()
+        else:
+            self.features, self.labels, self.model_output, self.iterator, self.train_iterator_init_op = self._build_data_input()
+        # Add the optimizer.
         self.total_loss, self.grads_and_vars, self.train_op, self.learning_rate, self.global_step = self._build_optimizer()
         # Add the prediction outputs.
         self.softmax_output, self.predictions_argmax = self._build_predictor()
@@ -95,9 +111,27 @@ class Training:
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(tf.local_variables_initializer())
 
+    def _build_data_input(self):
+        '''
+        Connect the datasets to the model.
+        '''
+        # Create an abstract reinitializable iterator so that we can use it with both the training
+        # and validation datasets.
+        self.iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
+        self.features, self.labels = self.iterator.get_next()
+        self.model_output = self.model(features)
+
+        self.train_iterator_init_op = self.iterator.make_initializer(self.train_dataset)
+
+        if not (self.val_dataset is None):
+            self.val_iterator_init_op = self.iterator.make_initializer(self.val_dataset)
+            return features, labels, model_output, iterator, train_iterator_init_op, val_iterator_init_op
+
+        return features, labels, model_output, iterator, train_iterator_init_op
+
     def _build_optimizer(self):
         '''
-        Builds the training-relevant part of the graph.
+        Build the training-relevant part of the graph.
         '''
 
         with tf.name_scope('optimizer'):
@@ -237,11 +271,11 @@ class Training:
               epochs,
               steps_per_epoch,
               learning_rate_schedule,
+              metrics={},
               eval_dataset='train',
               eval_frequency=5,
               val_dataset=None,
               val_steps=None,
-              metrics={},
               save_during_training=False,
               save_dir=None,
               save_best_only=True,
@@ -271,19 +305,19 @@ class Training:
                 per epoch.
             learning_rate_schedule (function): Any function that takes as its sole input
                 an integer (the global step counter) and returns a float (the learning rate).
+            metrics (set, optional): The metrics to be evaluated during training. A Python
+                set containing any subset of `{'loss', 'accuracy'}`, which are the
+                currently available metrics. Defaults to the empty set, meaning that the
+                model will not be evaluated during training.
             eval_dataset (string, optional): Which dataset to use for the evaluation
                 of the model during the training. Can be either of 'train' (the train_dataset
                 will be used) or 'val' (the val_dataset will be used). Defaults to 'train',
                 but should be set to 'val' if a validation dataset is available.
             eval_frequency (int, optional): The model will be evaluated on `metrics` after every
                 `eval_frequency` epochs.
-            val_dataset (tf.data.Dataset object, optional): An optional second dataset for a second
-                dataset (validation dataset), works the same way as `train_dataset`.
+            val_dataset (tf.data.Dataset object, optional): An optional second dataset
+                (validation dataset), works the same way as `train_dataset`.
             val_steps (int, optional): The number of iterations over `val_dataset` during evaluation.
-            metrics (set, optional): The metrics to be evaluated during training. A Python
-                set containing any subset of `{'loss', 'accuracy'}`, which are the
-                currently available metrics. Defaults to the empty set, meaning that the
-                model will not be evaluated during training.
             save_during_training (bool, optional): Whether or not to save the model periodically
                 during training, the parameters of which can be set in the subsequent arguments.
             save_dir (string, optional): The full path of the directory to save the model to
