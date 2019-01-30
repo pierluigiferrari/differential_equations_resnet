@@ -45,6 +45,10 @@ class Training:
             model (tf.keras.models.Model object): A tf.keras.models.Model or tf.keras.models.Sequential object.
                 The model must not be compiled, i.e. do not call tf.Keras' model.compile() method.
             optimizer (tf.train.Optimizer object): A tf.train.Optimizer object.
+            train_dataset (tf.data.Dataset object): A tf.data.Dataset object, the dataset to train on. An appropriate
+                iterator for the dataset will be created internally. It is recommended to set the dataset to infinite
+                repetition.
+            val_dataset (tf.data.Dataset object, optional): A tf.data.Dataset object, the validation dataset.
             summaries (list, optional): TODO.
         '''
         # Check TensorFlow version
@@ -91,9 +95,9 @@ class Training:
         # Build the part of the graph that is relevant for training the model.
         ########################################################################
 
+        # Get handles for the original inputs and outputs of the model.
         self.inputs = model.inputs[0]
-        self.outputs = model.outpus[0]
-
+        self.outputs = model.outputs[0]
         # Connect the datasets to the model.
         if not (self.val_dataset is None):
             self.features, self.labels, self.model_output, self.iterator, self.train_iterator_init_op, self.val_iterator_init_op = self._build_data_input()
@@ -143,7 +147,7 @@ class Training:
             regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES) # This is a list of the individual loss values, so we still need to sum them up.
             regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
             # Compute the total loss.
-            approximation_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.labels, logits=self.outputs), name='approximation_loss') # Scalar
+            approximation_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.labels, logits=self.model_output), name='approximation_loss') # Scalar
             total_loss = tf.add(approximation_loss, regularization_loss, name='total_loss')
             # Compute the gradients and apply them.
             grads_and_vars = self.optimizer.compute_gradients(total_loss, name='compute_gradients')
@@ -158,7 +162,7 @@ class Training:
 
         with tf.name_scope('predictor'):
 
-            softmax_output = tf.nn.softmax(self.outputs, name='softmax_output')
+            softmax_output = tf.nn.softmax(self.model_output, name='softmax_output')
             predictions_argmax = tf.argmax(softmax_output, axis=-1, name='predictions_argmax', output_type=tf.int64)
 
         return softmax_output, predictions_argmax
@@ -404,26 +408,23 @@ class Training:
             tr = trange(steps_per_epoch, file=sys.stdout)
             tr.set_description('Epoch {}/{}'.format(epoch, epochs))
 
-            for train_step in tr:
+            # Initialize the iterator with the training dataset.
+            self.sess.run(self.train_iterator_init_op)
 
-                batch_images, batch_labels = next(train_generator) #TODO
+            for train_step in tr:
 
                 if record_summaries and (self.g_step % summaries_frequency == 0):
                     _, current_loss, self.g_step, training_summary = self.sess.run([self.train_op,
                                                                                     self.total_loss,
                                                                                     self.global_step,
                                                                                     self.training_summaries],
-                                                                                   feed_dict={self.image_input: batch_images,
-                                                                                              self.labels: batch_labels,
-                                                                                              self.learning_rate: learning_rate})
+                                                                                   feed_dict={self.learning_rate: learning_rate})
                     training_writer.add_summary(summary=training_summary, global_step=self.g_step)
                 else:
                     _, current_loss, self.g_step = self.sess.run([self.train_op,
                                                                   self.total_loss,
                                                                   self.global_step],
-                                                                 feed_dict={self.image_input: batch_images,
-                                                                            self.labels: batch_labels,
-                                                                            self.learning_rate: learning_rate,})
+                                                                 feed_dict={self.learning_rate: learning_rate,})
 
                 self.variables_updated = True
 
@@ -509,7 +510,7 @@ class Training:
                     elif (metric_name in ['accuracry']) and (self.metric_values[i] > self.best_metric_values[i]):
                         self.best_metric_values[i] = self.metric_values[i]
 
-    def _evaluate(self, dataset, metrics, num_batches, l2_regularization, description='Running evaluation'):
+    def _evaluate(self, dataset, metrics, num_batches, description='Running evaluation'):
         '''
         Internal method used by both `evaluate()` and `train()` that performs
         the actual evaluation. For the first three arguments, please refer
@@ -529,14 +530,16 @@ class Training:
         tr = trange(num_batches, file=sys.stdout)
         tr.set_description(description)
 
+        # Initialize the iterator with the evaluation dataset.
+        if self.val_dataset:
+            self.sess.run(self.val_iterator_init_op)
+        else:
+            self.sess.run(self.train_iterator_init_op)
+
         # Accumulate metrics in batches.
         for step in tr:
 
-            batch_images, batch_labels = next(data_generator) #TODO
-
-            self.sess.run(self.metric_update_ops,
-                          feed_dict={self.image_input: batch_images,
-                                     self.labels: batch_labels,})
+            self.sess.run(self.metric_update_ops)
 
         # Compute final metric values.
         self.metric_values = self.sess.run(self.metric_value_tensors)
