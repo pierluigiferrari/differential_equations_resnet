@@ -30,7 +30,7 @@ from collections import deque
 import numpy as np
 import time
 
-from tf_variable_summaries import add_mean_norm_summary
+from training.tf_variable_summaries import add_mean_norm_summary
 
 class Training:
 
@@ -58,7 +58,7 @@ class Training:
         if not isinstance(model, (tf.keras.models.Model, tf.keras.models.Sequential)):
             raise ValueError("The model you passed is not an instance of tf.keras.models.Model or tf.keras.models.Sequential or a subclass thereof.")
 
-        if not isinstance(optimizer, tf.train.Optimizer:
+        if not isinstance(optimizer, tf.train.Optimizer):
             raise ValueError("The model you passed is not an instance of tf.train.Optimizer or a subclass thereof.")
 
         if not isinstance(train_dataset, tf.data.Dataset):
@@ -100,17 +100,41 @@ class Training:
         self.outputs = model.outputs[0]
         # Connect the datasets to the model.
         if not (self.val_dataset is None):
-            self.features, self.labels, self.model_output, self.iterator, self.train_iterator_init_op, self.val_iterator_init_op = self._build_data_input()
+            (self.features,
+             self.labels,
+             self.model_output,
+             self.use_train_dataset,
+             self.switch_to_train_dataset,
+             self.switch_to_val_dataset,
+             self.train_iterator,
+             self.train_features,
+             self.train_labels,
+             self.val_iterator,
+             self.val_features,
+             self.val_labels) = self._build_data_input()
         else:
-            self.features, self.labels, self.model_output, self.iterator, self.train_iterator_init_op = self._build_data_input()
+            (self.features,
+             self.labels,
+             self.model_output,
+             self.train_iterator) = self._build_data_input()
         # Add the optimizer.
-        self.total_loss, self.grads_and_vars, self.train_op, self.learning_rate, self.global_step = self._build_optimizer()
+        (self.total_loss,
+         self.grads_and_vars,
+         self.train_op,
+         self.learning_rate,
+         self.global_step) = self._build_optimizer()
         # Add the prediction outputs.
-        self.softmax_output, self.predictions_argmax = self._build_predictor()
+        (self.softmax_output,
+         self.predictions_argmax) = self._build_predictor()
         # Add metrics for evaluation.
-        self.mean_loss_value, self.mean_loss_update_op, self.acc_value, self.acc_update_op, self.metrics_reset_op = self._build_metrics()
+        (self.mean_loss_value,
+         self.mean_loss_update_op,
+         self.acc_value,
+         self.acc_update_op,
+         self.metrics_reset_op) = self._build_metrics()
         # Add summary ops for TensorBoard.
-        self.training_summaries, self.evaluation_summaries = self._build_summary_ops()
+        (self.training_summaries,
+         self.evaluation_summaries) = self._build_summary_ops()
         # Initialize the global and local (for the metrics) variables.
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(tf.local_variables_initializer())
@@ -119,19 +143,68 @@ class Training:
         '''
         Connect the datasets to the model.
         '''
+        # Create an iterator for the training dataset.
+        train_iterator = self.train_dataset.make_one_shot_iterator()
+        train_features, train_labels = train_iterator.get_next()
+
+        # Maybe create an iterator for the validation dataset. Note that we could also create one reinitializable iterator
+        # and use that with both datasets, but using two distinct iterators allows for more control. For example, if an epoch
+        # consists of fewer steps than the number of batches a training dataset would produce over a full pass, we might want evaluate
+        # the model on the validation dataset after a given epoch, but afterwards we will want to continue iterating over the
+        # training dataset exactly from the point where we stopped at the end of the last epoch. With two distinct iterators,
+        # this isn't a problem because they both maintain their own state. A reinitializable iterator would start at the beginning
+        # of the training dataset after every evaluation on the validation dataset, which is likely not what we want.
+        if not (self.val_dataset is None):
+            val_iterator = self.val_dataset.make_one_shot_iterator()
+            val_features, val_labels = val_iterator.get_next()
+
+            # Create a (non-trainable) variable that will be used to toggle the model input between the training and validation datasets.
+            use_train_dataset = tf.get_variable(name='use_train_dataset',
+                                                initializer=tf.constant(value=True),
+                                                trainable=False,
+                                                use_resource=True)
+            # Create ops that control the value of `use_train_dataset`.
+            switch_to_train_dataset = use_train_dataset.assign(True)
+            switch_to_val_dataset = use_train_dataset.assign(False)
+
+            features = tf.cond(pred=use_train_dataset, fn1=lambda: train_features, fn2=lambda: val_features)
+            labels = tf.cond(pred=use_train_dataset, fn1=lambda: train_labels, fn2=lambda: val_labels)
+
+            model_output = self.model(features)
+
+            return (features,
+                    labels,
+                    model_output,
+                    use_train_dataset,
+                    switch_to_train_dataset,
+                    switch_to_val_dataset,
+                    train_iterator,
+                    train_features,
+                    train_labels,
+                    val_iterator,
+                    val_features,
+                    val_labels)
+
+        else:
+            model_output = self.model(train_features)
+
+            return train_features, train_labels, model_output, train_iterator
+
+        '''
         # Create an abstract reinitializable iterator so that we can use it with both the training
         # and validation datasets.
-        self.iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
-        self.features, self.labels = self.iterator.get_next()
-        self.model_output = self.model(features)
+        iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
+        features, labels = iterator.get_next()
+        model_output = self.model(features)
 
-        self.train_iterator_init_op = self.iterator.make_initializer(self.train_dataset)
+        train_iterator_init_op = iterator.make_initializer(self.train_dataset)
 
         if not (self.val_dataset is None):
-            self.val_iterator_init_op = self.iterator.make_initializer(self.val_dataset)
+            val_iterator_init_op = iterator.make_initializer(self.val_dataset)
             return features, labels, model_output, iterator, train_iterator_init_op, val_iterator_init_op
 
         return features, labels, model_output, iterator, train_iterator_init_op
+        '''
 
     def _build_optimizer(self):
         '''
@@ -228,8 +301,8 @@ class Training:
                                                                     order='euclidean'))
 
             # Summaries for loss and learning rate.
-            training_summaries.append(tf.summary.scalar(name='total_loss', self.total_loss))
-            training_summaries.append(tf.summary.scalar(name='learning_rate', self.learning_rate))
+            training_summaries.append(tf.summary.scalar(name='total_loss', tensor=self.total_loss))
+            training_summaries.append(tf.summary.scalar(name='learning_rate', tensor=self.learning_rate))
 
             tr_summaries = tf.summary.merge(training_summaries, name='training_summaries')
 
@@ -237,9 +310,9 @@ class Training:
             evaluation_summaries = []
 
             if hasattr(self, 'mean_loss_value'):
-                evaluation_summaries.append(tf.summary.scalar(name='mean_loss', self.mean_loss_value))
+                evaluation_summaries.append(tf.summary.scalar(name='mean_loss', tensor=self.mean_loss_value))
             if hasattr(self, 'acc_value'):
-                evaluation_summaries.append(tf.summary.scalar(name='accuracy', self.acc_value))
+                evaluation_summaries.append(tf.summary.scalar(name='accuracy', tensor=self.acc_value))
 
             if evaluation_summaries:
                 eval_summaries = tf.summary.merge(inputs=evaluation_summaries, name='evaluation_summaries')
@@ -271,15 +344,13 @@ class Training:
             self.metric_value_tensors.append(self.acc_value)
 
     def train(self,
-              train_dataset,
               epochs,
               steps_per_epoch,
               learning_rate_schedule,
               metrics={},
               eval_dataset='train',
               eval_frequency=5,
-              val_dataset=None,
-              val_steps=None,
+              eval_steps=None,
               save_during_training=False,
               save_dir=None,
               save_best_only=True,
@@ -297,15 +368,9 @@ class Training:
         Trains the model.
 
         Arguments:
-            train_dataset (tf.data.Dataset object): A dataset that produces batches of images
-                and associated ground truth images in two separate Numpy arrays.
-                The images must be a 4D array with format `(batch_size, height, width, channels)`
-                and the ground truth images must be a 4D array with format
-                `(batch_size, height, width, num_classes)`, i.e. the ground truth
-                data must be provided in one-hot format.
             epochs (int): The number of epochs to run the training for, where each epoch
                 consists of `steps_per_epoch` training steps.
-            steps_per_epoch (int): The number of training steps (i.e. batches processed)
+            steps_per_epoch (int): The number of training steps (i.e. batches to train on)
                 per epoch.
             learning_rate_schedule (function): Any function that takes as its sole input
                 an integer (the global step counter) and returns a float (the learning rate).
@@ -319,9 +384,8 @@ class Training:
                 but should be set to 'val' if a validation dataset is available.
             eval_frequency (int, optional): The model will be evaluated on `metrics` after every
                 `eval_frequency` epochs.
-            val_dataset (tf.data.Dataset object, optional): An optional second dataset
-                (validation dataset), works the same way as `train_dataset`.
-            val_steps (int, optional): The number of iterations over `val_dataset` during evaluation.
+            eval_steps (int, optional): The number of iterations to run over the evaluation
+                dataset during evaluation. If this is `None`, it defaults to `steps_per_epoch`.
             save_during_training (bool, optional): Whether or not to save the model periodically
                 during training, the parameters of which can be set in the subsequent arguments.
             save_dir (string, optional): The full path of the directory to save the model to
@@ -373,7 +437,7 @@ class Training:
         if not eval_dataset in ['train', 'val']:
             raise ValueError("`eval_dataset` must be one of 'train' or 'val', but is '{}'.".format(eval_dataset))
 
-        if (eval_dataset == 'val') and ((val_dataset is None) or (val_steps is None)):
+        if (eval_dataset == 'val') and ((self.val_dataset is None) or (eval_steps is None)):
             raise ValueError("When eval_dataset == 'val', a `val_dataset` and `val_steps` must be passed.")
 
         for metric in metrics:
@@ -382,6 +446,9 @@ class Training:
 
         if (not monitor in metrics) and (not monitor == 'loss'):
             raise ValueError('You are trying to monitor {}, but it is not in `metrics` and is therefore not being computed.'.format(monitor))
+
+        if eval_steps is None:
+            eval_steps = steps_per_epoch
 
         self.eval_dataset = eval_dataset
 
@@ -408,8 +475,9 @@ class Training:
             tr = trange(steps_per_epoch, file=sys.stdout)
             tr.set_description('Epoch {}/{}'.format(epoch, epochs))
 
-            # Initialize the iterator with the training dataset.
-            self.sess.run(self.train_iterator_init_op)
+            if not (self.val_dataset is None):
+                # Switch to the training dataset iterator in case it hadn't already been set.
+                self.sess.run(self.switch_to_train_dataset)
 
             for train_step in tr:
 
@@ -444,17 +512,13 @@ class Training:
             if (len(metrics) > 0) and (epoch % eval_frequency == 0):
 
                 if eval_dataset == 'train':
-                    dataset = train_dataset
-                    num_batches = steps_per_epoch
                     description = 'Evaluation on training dataset'
                 elif eval_dataset == 'val':
-                    dataset = val_dataset
-                    num_batches = val_steps
                     description = 'Evaluation on validation dataset'
 
-                self._evaluate(dataset=dataset,
+                self._evaluate(eval_dataset=eval_dataset,
                                metrics=metrics,
-                               num_batches=num_batches,
+                               num_batches=eval_steps,
                                description=description)
 
                 if record_summaries:
@@ -510,7 +574,7 @@ class Training:
                     elif (metric_name in ['accuracry']) and (self.metric_values[i] > self.best_metric_values[i]):
                         self.best_metric_values[i] = self.metric_values[i]
 
-    def _evaluate(self, dataset, metrics, num_batches, description='Running evaluation'):
+    def _evaluate(self, eval_dataset, metrics, num_batches, description='Running evaluation'):
         '''
         Internal method used by both `evaluate()` and `train()` that performs
         the actual evaluation. For the first three arguments, please refer
@@ -531,10 +595,12 @@ class Training:
         tr.set_description(description)
 
         # Initialize the iterator with the evaluation dataset.
-        if self.val_dataset:
-            self.sess.run(self.val_iterator_init_op)
+        if eval_dataset == 'val':
+            # Switch to the validation dataset iterator.
+            self.sess.run(self.switch_to_val_dataset)
         else:
-            self.sess.run(self.train_iterator_init_op)
+            # Switch to the training dataset iterator in case it hadn't already been set.
+            self.sess.run(self.switch_to_train_dataset)
 
         # Accumulate metrics in batches.
         for step in tr:
@@ -549,12 +615,12 @@ class Training:
             evaluation_results_string += metric_name + ': {:.4f}  '.format(self.metric_values[i])
         print(evaluation_results_string)
 
-    def evaluate(self, dataset, num_batches, metrics={'loss', 'accuracy'}, dataset='val'):
+    def evaluate(self, eval_dataset, num_batches, metrics={'loss', 'accuracy'}, dataset='val'):
         '''
         Evaluates the model on the given metrics on the data in `dataset`.
 
         Arguments:
-            dataset (tf.data.Dataset object): A dataset that produces batches of images
+            dataset TODO (tf.data.Dataset object): A dataset that produces batches of images
                 and associated ground truth images in two separate Numpy arrays.
                 The images must be a 4D array with format `(batch_size, height, width, channels)`
                 and the ground truth images must be a 4D array with format
@@ -581,14 +647,14 @@ class Training:
             if not metric in ['loss', 'accuracy']:
                 raise ValueError("{} is not a valid metric. Valid metrics are ['loss', 'accuracy']".format(metric))
 
-        if not dataset in {'train', 'val'}:
+        if not eval_dataset in {'train', 'val'}:
             raise ValueError("`dataset` must be either 'train' or 'val'.")
 
         self._initialize_metrics(metrics)
 
-        self._evaluate(dataset, metrics, num_batches, l2_regularization, description='Running evaluation')
+        self._evaluate(eval_dataset, metrics, num_batches, description='Running evaluation')
 
-        if dataset == 'val':
+        if eval_dataset == 'val':
             self.eval_dataset = 'val'
         else:
             self.eval_dataset = 'train'
