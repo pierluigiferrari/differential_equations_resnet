@@ -44,7 +44,8 @@ class Training:
         Arguments:
             model (tf.keras.models.Model object): A tf.keras.models.Model or tf.keras.models.Sequential object.
                 The model must not be compiled, i.e. do not call tf.Keras' model.compile() method.
-            optimizer (tf.train.Optimizer object): A tf.train.Optimizer object.
+            optimizer (tf.train.Optimizer object): A tf.train.Optimizer object. The learning rate of the optimizer
+                instance is expected to be initialized by a placeholder tensor with the name 'learning_rate'.
             train_dataset (tf.data.Dataset object): A tf.data.Dataset object, the dataset to train on. An appropriate
                 iterator for the dataset will be created internally. It is recommended to set the dataset to infinite
                 repetition.
@@ -214,8 +215,8 @@ class Training:
         with tf.name_scope('optimizer'):
             # Create a training step counter.
             global_step = tf.Variable(0, trainable=False, name='global_step')
-            # Create placeholder for the learning rate.
-            learning_rate = tf.placeholder(dtype=tf.float32, shape=[], name='learning_rate')
+            # Get the learning rate placeholder from the optimizer object.
+            learning_rate = tf.get_default_graph().get_tensor_by_name('learning_rate:0')
             # Compute the regularizatin loss.
             regularization_losses = self.model.losses # This is a list of the individual loss values, so we still need to sum them up.
             regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
