@@ -167,8 +167,8 @@ class Training:
             switch_to_train_dataset = use_train_dataset.assign(True)
             switch_to_val_dataset = use_train_dataset.assign(False)
 
-            features = tf.cond(pred=use_train_dataset, fn1=lambda: train_features, fn2=lambda: val_features)
-            labels = tf.cond(pred=use_train_dataset, fn1=lambda: train_labels, fn2=lambda: val_labels)
+            features = tf.cond(pred=use_train_dataset, true_fn=lambda: train_features, false_fn=lambda: val_features)
+            labels = tf.cond(pred=use_train_dataset, true_fn=lambda: train_labels, false_fn=lambda: val_labels)
 
             model_output = self.model(features)
 
