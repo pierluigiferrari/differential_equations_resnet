@@ -28,6 +28,7 @@ class TFRecordDatasetCreator:
                  feature_schema,
                  batch_size,
                  preprocessors=None,
+                 repeat=True,
                  num_epochs=None,
                  shuffle=True,
                  shuffle_buffer_size=None,
@@ -45,6 +46,7 @@ class TFRecordDatasetCreator:
         self.feature_schema = feature_schema
         self.batch_size = batch_size
         self.preprocessors = preprocessors
+        self.repeat = repeat
         self.num_epochs = num_epochs
         self.shuffle = shuffle
         self.shuffle_buffer_size = shuffle_buffer_size
@@ -74,6 +76,10 @@ class TFRecordDatasetCreator:
         if self.shuffle:
             self.dataset = self.dataset.shuffle(buffer_size=self.shuffle_buffer_size)
 
+        if self.repeat:
+            # Repeat the dataset.
+            self.dataset = self.dataset.repeat(self.num_epochs)
+
     def create_dataset(self):
 
         self._process()
@@ -85,9 +91,7 @@ class TFRecordDatasetCreator:
         def _input_function():
 
             self._process()
-            dataset = self.dataset.repeat(self.num_epochs)
-            dataset = dataset.batch(self.batch_size)
-
+            dataset = self.dataset.batch(self.batch_size)
             iterator = dataset.make_one_shot_iterator()
             return iterator
 
