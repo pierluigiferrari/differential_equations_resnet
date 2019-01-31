@@ -22,8 +22,10 @@ import os
 import sys
 import glob
 import random
+import pathlib
 from tqdm import trange
 from math import ceil
+from sklearn.model_selection import train_test_split
 
 class TFRecordGenerator:
 
@@ -31,17 +33,80 @@ class TFRecordGenerator:
         pass
 
     def convert(self,
-                directory,
-                tfrecord_file_name,
+                input_directory,
+                output_directory,
+                prefix='',
                 suffix='tfrecord',
                 num_files_per_record=1000,
-                shuffle=True,
+                train_val_split=0.25,
                 encode_image_shape=False):
+        '''
+        Convert all images in input_directory and any subdirectories into TFRedord files.
 
-        image_paths = get_image_paths(get_subdirectories(directory))
+        Along with the images themselves, classification labels will be stored based on the
+        file names of the respective images. The images will always be shuffled before being
+        written to the TFRecord files.
 
-        if shuffle:
+        Arguments:
+            input_directory (str): Images from this directory and any subdirectories will be
+                converted to TFRecord files.
+            output_directory (str): The directory in which to place the created TFRecord files.
+                If it doesn't exist, it will be created. If you are using the built-in feature
+                to split the dataset into training and validation parts, then two appropriate
+                subdirectories will be created automatically.
+            prefix (str, optional): The beginning of the file names for the TFRecord output files.
+            suffix (str, optional): The file extension for the TFRecord output files. Must not
+                contain a leading dot.
+            num_files_per_record (int, optional): The number of images to store in one TFRecord file.
+            train_val_split (float, optional): The share of the images that should be split into a
+                validation dataset. If `None`, then all images will be associated with the same dataset.
+                This is just a convenience feature that ensures the desired split size and names the
+                files of the two datasets accordingly.
+
+        Returns:
+            None.
+        '''
+
+        image_paths = get_image_paths(get_subdirectories(input_directory))
+
+        if not (train_val_split is None):
+            train_paths, val_paths = train_test_split(image_paths, test_size=train_val_split, shuffle=True)
+            self.train_dataset_size = len(train_paths)
+            self.val_dataset_size = len(val_paths)
+            print("Number of examples in the training dataset: {}".format(self.train_dataset_size))
+            print("Number of examples in the validation dataset: {}".format(self.val_dataset_size))
+            self._convert(image_paths=train_paths,
+                          output_directory=os.path.join(output_directory, 'train'),
+                          prefix=prefix+'_train',
+                          suffix=suffix,
+                          num_files_per_record=num_files_per_record,
+                          encode_image_shape=False)
+            self._convert(image_paths=val_paths,
+                          output_directory=os.path.join(output_directory, 'val'),
+                          prefix=prefix+'_val',
+                          suffix=suffix,
+                          num_files_per_record=num_files_per_record,
+                          encode_image_shape=False)
+        else:
             random.shuffle(image_paths)
+            self.dataset_size = len(image_paths)
+            print("Number of examples in the dataset: {}".format(self.dataset_size))
+            self._convert(image_paths=image_paths,
+                          output_directory=output_directory,
+                          prefix=prefix,
+                          suffix=suffix,
+                          num_files_per_record=num_files_per_record,
+                          encode_image_shape=False)
+
+    def _convert(self,
+                 image_paths,
+                 output_directory,
+                 prefix,
+                 suffix,
+                 num_files_per_record,
+                 encode_image_shape=False):
+
+        pathlib.Path(output_directory).mkdir(parents=True, exist_ok=True)
 
         num_files_total = len(image_paths)
         num_tfrecords = ceil(num_files_total / num_files_per_record)
@@ -51,8 +116,8 @@ class TFRecordGenerator:
         while start < num_files_total:
             num_files_remaining = num_files_total - start
             batch_size = num_files_per_record if (num_files_remaining >= num_files_per_record) else num_files_remaining
-            with tf.python_io.TFRecordWriter(tfrecord_file_name + '_{:04d}.{}'.format(tfrecord_file_number, suffix)) as writer:
-                for i in trange(batch_size, desc="Creating TFRecord file {}/{}".format(tfrecord_file_number+1, num_tfrecords), file=sys.stdout):
+            with tf.python_io.TFRecordWriter(os.path.join(output_directory, '') + prefix + '_{:04d}.{}'.format(tfrecord_file_number, suffix)) as writer:
+                for i in trange(batch_size, desc="Creating TFRecord file {} {}/{}".format(prefix, tfrecord_file_number+1, num_tfrecords), file=sys.stdout):
                     example = self._convert_sample(image_paths[start+i], encode_image_shape) # This is an instance of tf.Example
                     writer.write(example.SerializeToString())
             start += num_files_per_record
