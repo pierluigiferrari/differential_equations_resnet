@@ -217,13 +217,13 @@ class Training:
             # Create placeholder for the learning rate.
             learning_rate = tf.placeholder(dtype=tf.float32, shape=[], name='learning_rate')
             # Compute the regularizatin loss.
-            regularization_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES) # This is a list of the individual loss values, so we still need to sum them up.
+            regularization_losses = self.model.losses # This is a list of the individual loss values, so we still need to sum them up.
             regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
             # Compute the total loss.
-            approximation_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=self.labels, logits=self.model_output), name='approximation_loss') # Scalar
+            approximation_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=tf.stop_gradient(self.labels), logits=self.model_output), name='approximation_loss') # Scalar
             total_loss = tf.add(approximation_loss, regularization_loss, name='total_loss')
             # Compute the gradients and apply them.
-            grads_and_vars = self.optimizer.compute_gradients(total_loss, name='compute_gradients')
+            grads_and_vars = self.optimizer.compute_gradients(total_loss)
             train_op = self.optimizer.apply_gradients(grads_and_vars, global_step=global_step, name='train_op')
 
         return total_loss, grads_and_vars, train_op, learning_rate, global_step
