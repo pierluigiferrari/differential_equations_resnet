@@ -399,6 +399,7 @@ def build_single_block_resnet(image_size,
                               blocks_per_stage=[3, 4, 6, 3],
                               filters_per_block=[64, 128, 256, 512],
                               include_top=True,
+                              fc_activation=None,
                               num_classes=None,
                               use_batch_norm=False,
                               use_max_pooling=[False, False, False, False],
@@ -422,6 +423,10 @@ def build_single_block_resnet(image_size,
         include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
             Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
             by a softmax activation ayer will be added, the output of the latter of which will be the model output.
+        fc_activation (str, optional): The activation function to use for the very last layer of the network,
+            i.e. the dense layer. Can be any valid Keras activation function name, e.g. 'softmax' for classification.
+            If this is `None`, no activation will be applied to the dense layer. Only relevant if `include_top`
+            is True.
         num_classes (int, optional): The number of classes for classification. Only relevant if `inclue_top`
             is `True`.
         use_batch_norm (bool, optional): If `True`, adds a batch normalization layer
@@ -528,7 +533,7 @@ def build_single_block_resnet(image_size,
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation='softmax', kernel_regularizer=l2(l2_regularization), name='fc')(x)
+        x = Dense(num_classes, activation=fc_activation, kernel_regularizer=l2(l2_regularization), name='fc')(x)
 
     # Create the model.
     model = tf.keras.models.Model(input_tensor, x, name=name)
@@ -538,6 +543,7 @@ def build_single_block_resnet(image_size,
 def build_resnet(image_size,
                  kernel_type='antisymmetric',
                  include_top=True,
+                 fc_activation=None,
                  num_classes=None,
                  l2_regularization=0.0,
                  subtract_mean=None,
@@ -562,6 +568,10 @@ def build_resnet(image_size,
         include_top (bool, optional): If `False`, the output of the last convolutional layer is the model output.
             Otherwise, an average pooling layer and a fully connected layer with `num_classes` outputs followed
             by a softmax activation ayer will be added, the output of the latter of which will be the model output.
+        fc_activation (str, optional): The activation function to use for the very last layer of the network,
+            i.e. the dense layer. Can be any valid Keras activation function name, e.g. 'softmax' for classification.
+            If this is `None`, no activation will be applied to the dense layer. Only relevant if `include_top`
+            is True.
         num_classes (int, optional): The number of classes for classification. Only relevant if `inclue_top`
             is `True`.
         subtract_mean (array-like, optional): `None` or an array-like object of integers or floating point values
@@ -710,7 +720,7 @@ def build_resnet(image_size,
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation='softmax', kernel_regularizer=l2(l2_regularization), name='fc')(x)
+        x = Dense(num_classes, activation=fc_activation, kernel_regularizer=l2(l2_regularization), name='fc')(x)
 
     # Create the model.
     model = tf.keras.models.Model(input_tensor, x, name=name)
