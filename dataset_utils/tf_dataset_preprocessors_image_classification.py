@@ -74,9 +74,9 @@ class DecodeJPEGImages:
         self.num_parallel_calls = num_parallel_calls
 
     def __call__(self, dataset):
-        dataset = dataset.map(lambda image, label: (tf.image.decode_image(image,
-                                                                          channels=self.channels,
-                                                                          ratio=self.ratio), label),
+        dataset = dataset.map(lambda image, label: (tf.image.decode_jpeg(image,
+                                                                         channels=self.channels,
+                                                                         ratio=self.ratio), label),
                               num_parallel_calls=self.num_parallel_calls)
         return dataset
 
