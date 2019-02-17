@@ -120,6 +120,8 @@ class Training:
          self.acc_value,
          self.acc_update_op,
          self.metrics_reset_op) = self._build_metrics()
+        # Add gradient metrics.
+        self.gradient_mean_norms = self._build_gradient_metrics()
         # Add summary ops for TensorBoard.
         (self.training_summaries,
          self.evaluation_summaries) = self._build_summary_ops()
@@ -231,7 +233,32 @@ class Training:
 
     def _build_gradient_metrics(self):
         '''
+        Build the ops that measure the behavior of the gradients.
         '''
+
+        # The following values are picked so that we get only the gradient norms for the gradients
+        # we're interested in, rather than for all gradients.
+        min_kernel_rank = 4 # Do we care only about the gradients of the convolutional layers (which have rank 4), or also about those of other layer types, e.g. dense layers?
+        min_kernel_size = 3 # Do we only care about convolutions that are at least e.g. 3-by-3, or do we also care about 1-by-1 convolutions?
+        valid_variable_types = ['kernel'] # Many models have 'kernels' and 'biases' for the main layers, 'gamma' and 'beta' for BatchNorm, etc.
+
+        gradient_mean_norms = []
+
+        with tf.name_scope('gradient_metrics'):
+
+            for gradient, variable in self.grads_and_vars:
+
+                # Extract the weight type from the variable name.
+                variable_name = variable.name.split(':')[0]
+                variable_type = variable_name.split('/')[-1]
+
+                if (variable_type in valid_variable_types
+                    and variable.shape[0] >= min_kernel_size
+                    and len(variable.shape) >= min_kernel_rank):
+
+                    gradient_mean_norms.append(tf.identity(tf.norm(gradient, ord='euclidean') / tf.to_float(tf.size(gradient)), name='{}_gradient_mean_norm'.format(variable_name)))
+
+            return gradient_mean_norms
 
     def _build_summary_ops(self):
         '''
@@ -243,12 +270,12 @@ class Training:
             training_summaries = []
 
             # Summaries that compute the mean norms of the gradients and variables.
-            for gradient, variable in self.grads_and_vars:
-                if 'mean_gradient_norms' in self.summaries:
-                    training_summaries.append(add_mean_norm_summary(gradient,
-                                                                    scope='{}_gradient'.format(variable.name.replace(':', '_')),
-                                                                    order='euclidean'))
-                if 'mean_weight_norms' in self.summaries:
+            if 'mean_gradient_norms' in self.summaries:
+                for gradient_mean_norm in self.gradient_mean_norms:
+                    training_summaries.append(tf.summary.scalar(name=gradient_mean_norm.name, tensor=gradient_mean_norm))
+
+            if 'mean_weight_norms' in self.summaries:
+                for gradient, variable in self.grads_and_vars:
                     training_summaries.append(add_mean_norm_summary(variable,
                                                                     scope='{}_gradient'.format(variable.name.replace(':', '_')),
                                                                     order='euclidean'))
@@ -404,11 +431,23 @@ class Training:
                 evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name+'_eval'))
 
         # Define the fetches and feed dict.
-        fetches_summaries = self.metric_value_tensors + [self.global_step,
-                                                         self.training_summaries,
-                                                         self.train_step] + self.metric_update_ops + self.model.updates
-        fetches_no_summaries = self.metric_value_tensors + [self.global_step,
-                                                            self.train_step] + self.metric_update_ops + self.model.updates
+        fetches_summaries = {'gloabal_step': self.global_step,
+                             'training_step': self.train_step,
+                             'metric_updates': self.metric_update_ops,
+                             'metric_values': self.metric_value_tensors,
+                             'gradient_mean_norms': self.gradient_mean_norms,
+                             'training_summaries': self.training_summaries,
+                             'layer_updates': self.model.updates}
+        fetches_no_summaries = {'gloabal_step': self.global_step,
+                                'training_step': self.train_step,
+                                'metric_updates': self.metric_update_ops,
+                                'metric_values': self.metric_value_tensors,
+                                'layer_updates': self.model.updates}
+        #fetches_summaries = self.metric_value_tensors + [self.global_step,
+        #                                                 self.training_summaries,
+        #                                                 self.train_step] + self.metric_update_ops + self.model.updates
+        #fetches_no_summaries = self.metric_value_tensors + [self.global_step,
+        #                                                    self.train_step] + self.metric_update_ops + self.model.updates
         feed_dict = {self.iterator_handle: self.train_iterator_handle,
                      self.learning_rate: learning_rate,
                      tf.keras.backend.learning_phase(): 1}
