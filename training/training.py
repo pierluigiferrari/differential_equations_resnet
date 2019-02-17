@@ -35,15 +35,15 @@ from training.tf_variable_summaries import add_mean_norm_summary
 class Training:
 
     def __init__(self,
-                 model,
+                 model_build_function,
                  optimizer,
                  train_dataset,
                  val_dataset=None,
                  summaries=['mean_gradient_norms']):
         '''
         Arguments:
-            model (tf.keras.models.Model object): A tf.keras.models.Model or tf.keras.models.Sequential object.
-                The model must not be compiled, i.e. do not call tf.Keras' model.compile() method.
+            model (function): A function that takes as input an input tensor (the output of a tf.keras.layers.Input object)
+                and returns a tf.keras.models.Model object. The returned model must not be compiled.
             optimizer (tf.train.Optimizer object): A tf.train.Optimizer object. The learning rate of the optimizer
                 instance is expected to be initialized by a placeholder tensor with the name 'learning_rate'.
             train_dataset (tf.data.Dataset object): A tf.data.Dataset object, the dataset to train on. An appropriate
@@ -56,9 +56,6 @@ class Training:
         assert LooseVersion(tf.__version__) >= LooseVersion('1.0'), 'This program requires TensorFlow version 1.0 or newer. You are using {}'.format(tf.__version__)
         print('TensorFlow Version: {}'.format(tf.__version__))
 
-        if not isinstance(model, (tf.keras.models.Model, tf.keras.models.Sequential)):
-            raise ValueError("The model you passed is not an instance of tf.keras.models.Model or tf.keras.models.Sequential or a subclass thereof.")
-
         if not isinstance(optimizer, tf.train.Optimizer):
             raise ValueError("The model you passed is not an instance of tf.train.Optimizer or a subclass thereof.")
 
@@ -68,7 +65,7 @@ class Training:
         if (not (val_dataset is None)) and (not isinstance(val_dataset, tf.data.Dataset)):
             raise ValueError("val_dataset must be a tf.data.Dataset object.")
 
-        self.model = model
+        self.model_build_function = model_build_function
         self.optimizer = optimizer
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
@@ -90,43 +87,33 @@ class Training:
         self.best_training_loss = 99999999.9
 
         self.sess = tf.Session()
+        tf.keras.backend.set_session(self.sess)
         self.g_step = None # The global step
 
         ########################################################################
-        # Build the part of the graph that is relevant for training the model.
+        # Build the graph.
         ########################################################################
 
-        # Get handles for the original inputs and outputs of the model.
-        self.inputs = model.inputs[0]
-        self.outputs = model.outputs[0]
-        # Connect the datasets to the model.
-        if not (self.val_dataset is None):
-            (self.features,
-             self.labels,
-             self.model_output,
-             self.use_train_dataset,
-             self.switch_to_train_dataset,
-             self.switch_to_val_dataset,
-             self.train_iterator,
-             self.train_features,
-             self.train_labels,
-             self.val_iterator,
-             self.val_features,
-             self.val_labels) = self._build_data_input()
-        else:
-            (self.features,
-             self.labels,
-             self.model_output,
-             self.train_iterator) = self._build_data_input()
-        # Add the optimizer.
+        # Set up the dataset iterators.
+        (self.features,
+         self.labels,
+         self.iterator,
+         self.iterator_handle,
+         self.train_iterator_handle,
+         self.val_iterator_handle) = self._build_data_iterators()
+        # Build the model.
+        self.input_tensor = tf.keras.layers.Input(tensor=self.features)
+        self.model = self.model_build_function(self.input_tensor)
+        if not isinstance(self.model, (tf.keras.models.Model, tf.keras.models.Sequential)):
+            raise ValueError("The model_build_function you passed does not return a tf.keras.models.Model or tf.keras.models.Sequential object or a subclass thereof.")
+        # Add the loss and optimizer.
         (self.total_loss,
          self.grads_and_vars,
-         self.train_op,
+         self.train_step,
          self.learning_rate,
          self.global_step) = self._build_optimizer()
         # Add the prediction outputs.
-        (self.softmax_output,
-         self.predictions_argmax) = self._build_predictor()
+        self.predictions_argmax = self._build_predictor()
         # Add metrics for evaluation.
         (self.mean_loss_value,
          self.mean_loss_update_op,
@@ -140,72 +127,35 @@ class Training:
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(tf.local_variables_initializer())
 
-    def _build_data_input(self):
+    def _build_data_iterators(self):
         '''
-        Connect the datasets to the model.
+        Set up the iterators for the datasets.
         '''
-        # Create an iterator for the training dataset.
-        train_iterator = self.train_dataset.make_one_shot_iterator()
-        train_features, train_labels = train_iterator.get_next()
+        with tf.name_scope('data_input'):
 
-        # Maybe create an iterator for the validation dataset. Note that we could also create one reinitializable iterator
-        # and use that with both datasets, but using two distinct iterators allows for more control. For example, if an epoch
-        # consists of fewer steps than the number of batches a training dataset would produce over a full pass, we might want evaluate
-        # the model on the validation dataset after a given epoch, but afterwards we will want to continue iterating over the
-        # training dataset exactly from the point where we stopped at the end of the last epoch. With two distinct iterators,
-        # this isn't a problem because they both maintain their own state. A reinitializable iterator would start at the beginning
-        # of the training dataset after every evaluation on the validation dataset, which is likely not what we want.
-        if not (self.val_dataset is None):
-            val_iterator = self.val_dataset.make_one_shot_iterator()
-            val_features, val_labels = val_iterator.get_next()
+            train_iterator = self.train_dataset.make_one_shot_iterator()
+            train_iterator_handle = self.sess.run(train_iterator.string_handle())
 
-            # Create a (non-trainable) variable that will be used to toggle the model input between the training and validation datasets.
-            use_train_dataset = tf.get_variable(name='use_train_dataset',
-                                                initializer=tf.constant(value=True),
-                                                trainable=False,
-                                                use_resource=True)
-            # Create ops that control the value of `use_train_dataset`.
-            switch_to_train_dataset = use_train_dataset.assign(True)
-            switch_to_val_dataset = use_train_dataset.assign(False)
+            if not (self.val_dataset is None):
+                val_iterator = self.val_dataset.make_one_shot_iterator()
+            else:
+                val_iterator = self.train_dataset.make_one_shot_iterator()
 
-            features = tf.cond(pred=use_train_dataset, true_fn=lambda: train_features, false_fn=lambda: val_features)
-            labels = tf.cond(pred=use_train_dataset, true_fn=lambda: train_labels, false_fn=lambda: val_labels)
+            val_iterator_handle = self.sess.run(val_iterator.string_handle())
 
-            model_output = self.model(features)
+            iterator_handle = tf.placeholder(tf.string, shape=[])
+            iterator = tf.data.Iterator.from_string_handle(string_handle=iterator_handle,
+                                                           output_types=train_iterator.output_types,
+                                                           output_shapes=train_iterator.output_shapes)
+
+            features, labels = iterator.get_next()
 
             return (features,
                     labels,
-                    model_output,
-                    use_train_dataset,
-                    switch_to_train_dataset,
-                    switch_to_val_dataset,
-                    train_iterator,
-                    train_features,
-                    train_labels,
-                    val_iterator,
-                    val_features,
-                    val_labels)
-
-        else:
-            model_output = self.model(train_features)
-
-            return train_features, train_labels, model_output, train_iterator
-
-        '''
-        # Create an abstract reinitializable iterator so that we can use it with both the training
-        # and validation datasets.
-        iterator = tf.data.Iterator.from_structure(self.train_dataset.output_types, self.train_dataset.output_shapes)
-        features, labels = iterator.get_next()
-        model_output = self.model(features)
-
-        train_iterator_init_op = iterator.make_initializer(self.train_dataset)
-
-        if not (self.val_dataset is None):
-            val_iterator_init_op = iterator.make_initializer(self.val_dataset)
-            return features, labels, model_output, iterator, train_iterator_init_op, val_iterator_init_op
-
-        return features, labels, model_output, iterator, train_iterator_init_op
-        '''
+                    iterator,
+                    iterator_handle,
+                    train_iterator_handle,
+                    val_iterator_handle)
 
     def _build_optimizer(self):
         '''
@@ -221,29 +171,27 @@ class Training:
             regularization_losses = self.model.losses # This is a list of the individual loss values, so we still need to sum them up.
             regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
             # Compute the total loss.
-            approximation_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=tf.stop_gradient(self.labels), logits=self.model_output), name='approximation_loss') # Scalar
+            approximation_loss = loss = tf.reduce_mean(tf.keras.backend.categorical_crossentropy(target=self.labels, output=self.model.output, from_logits=False), name='approximation_loss') # Scalar
             total_loss = tf.add(approximation_loss, regularization_loss, name='total_loss')
             # Compute the gradients and apply them.
-            grads_and_vars = self.optimizer.compute_gradients(total_loss)
-            train_op = self.optimizer.apply_gradients(grads_and_vars, global_step=global_step, name='train_op')
+            grads_and_vars = self.optimizer.compute_gradients(loss=total_loss)
+            train_step = self.optimizer.apply_gradients(grads_and_vars, global_step=global_step, name='train_op')
 
-        return total_loss, grads_and_vars, train_op, learning_rate, global_step
+        return total_loss, grads_and_vars, train_step, learning_rate, global_step
 
     def _build_predictor(self):
         '''
-        Builds the prediction-relevant part of the graph.
+        Build the prediction-relevant part of the graph.
         '''
 
         with tf.name_scope('predictor'):
+            predictions_argmax = tf.argmax(self.model.output, axis=-1, name='predictions_argmax', output_type=tf.int64)
 
-            softmax_output = tf.nn.softmax(self.model_output, name='softmax_output')
-            predictions_argmax = tf.argmax(softmax_output, axis=-1, name='predictions_argmax', output_type=tf.int64)
-
-        return softmax_output, predictions_argmax
+        return predictions_argmax
 
     def _build_metrics(self):
         '''
-        Builds the evaluation-relevant part of the graph, i.e. the metrics operations.
+        Build the evaluation-relevant part of the graph, i.e. the metrics operations.
         '''
 
         with tf.variable_scope('metrics') as scope:
@@ -281,9 +229,13 @@ class Training:
                 acc_update_op,
                 metrics_reset_op)
 
+    def _build_gradient_metrics(self):
+        '''
+        '''
+
     def _build_summary_ops(self):
         '''
-        Builds the part of the graph that logs summaries for TensorBoard.
+        Build the part of the graph that logs summaries for TensorBoard.
         '''
 
         with tf.name_scope('summaries'):
@@ -301,19 +253,18 @@ class Training:
                                                                     scope='{}_gradient'.format(variable.name.replace(':', '_')),
                                                                     order='euclidean'))
 
-            # Summaries for loss and learning rate.
-            training_summaries.append(tf.summary.scalar(name='total_loss', tensor=self.total_loss))
+            # Summaries for learning rate and metrics.
             training_summaries.append(tf.summary.scalar(name='learning_rate', tensor=self.learning_rate))
+            training_summaries.append(tf.summary.scalar(name='mean_loss', tensor=self.mean_loss_value))
+            training_summaries.append(tf.summary.scalar(name='accuracy', tensor=self.acc_value))
 
             tr_summaries = tf.summary.merge(training_summaries, name='training_summaries')
 
-            # All other metrics.
+            # All evaluation metrics.
             evaluation_summaries = []
 
-            if hasattr(self, 'mean_loss_value'):
-                evaluation_summaries.append(tf.summary.scalar(name='mean_loss', tensor=self.mean_loss_value))
-            if hasattr(self, 'acc_value'):
-                evaluation_summaries.append(tf.summary.scalar(name='accuracy', tensor=self.acc_value))
+            evaluation_summaries.append(tf.summary.scalar(name='mean_loss', tensor=self.mean_loss_value))
+            evaluation_summaries.append(tf.summary.scalar(name='accuracy', tensor=self.acc_value))
 
             if evaluation_summaries:
                 eval_summaries = tf.summary.merge(inputs=evaluation_summaries, name='evaluation_summaries')
@@ -321,9 +272,9 @@ class Training:
             else:
                 return tr_summaries
 
-    def _initialize_metrics(self, metrics):
+    def _initialize_metrics(self):
         '''
-        Initializes/resets the metrics before every call to `train` and `evaluate`.
+        Initialize/reset the metrics before every call to `train` and `evaluate`.
         '''
 
         # Reset lists of previous tracked metrics.
@@ -333,16 +284,16 @@ class Training:
         self.metric_value_tensors = []
 
         # Set the metrics that will be evaluated.
-        if 'loss' in metrics:
-            self.metric_names.append('loss')
-            self.best_metric_values.append(99999999.9)
-            self.metric_update_ops.append(self.mean_loss_update_op)
-            self.metric_value_tensors.append(self.mean_loss_value)
-        if 'accuracy' in metrics:
-            self.metric_names.append('accuracy')
-            self.best_metric_values.append(0.0)
-            self.metric_update_ops.append(self.acc_update_op)
-            self.metric_value_tensors.append(self.acc_value)
+        # Mean loss.
+        self.metric_names.append('mean_loss')
+        self.best_metric_values.append(99999999.9)
+        self.metric_update_ops.append(self.mean_loss_update_op)
+        self.metric_value_tensors.append(self.mean_loss_value)
+        # Accuracy.
+        self.metric_names.append('accuracy')
+        self.best_metric_values.append(0.0)
+        self.metric_update_ops.append(self.acc_update_op)
+        self.metric_value_tensors.append(self.acc_value)
 
     def train(self,
               epochs,
@@ -363,10 +314,9 @@ class Training:
               record_summaries=True,
               summaries_frequency=10,
               summaries_dir=None,
-              summaries_name=None,
-              training_loss_display_averaging=3):
+              summaries_name=None):
         '''
-        Trains the model.
+        Train the model.
 
         Arguments:
             epochs (int): The number of epochs to run the training for, where each epoch
@@ -375,16 +325,13 @@ class Training:
                 per epoch.
             learning_rate_schedule (function): Any function that takes as its sole input
                 an integer (the global step counter) and returns a float (the learning rate).
-            metrics (set, optional): The metrics to be evaluated during training. A Python
-                set containing any subset of `{'loss', 'accuracy'}`, which are the
-                currently available metrics. Defaults to the empty set, meaning that the
-                model will not be evaluated during training.
             eval_dataset (string, optional): Which dataset to use for the evaluation
                 of the model during the training. Can be either of 'train' (the train_dataset
                 will be used) or 'val' (the val_dataset will be used). Defaults to 'train',
                 but should be set to 'val' if a validation dataset is available.
-            eval_frequency (int, optional): The model will be evaluated on `metrics` after every
-                `eval_frequency` epochs.
+            eval_frequency (int, optional): The model will be evaluated on the evaluation
+                dataset after every `eval_frequency` epochs. If `None`, the model will not be
+                evaluated in between epochs.
             eval_steps (int, optional): The number of iterations to run over the evaluation
                 dataset during evaluation. If this is `None`, it defaults to `steps_per_epoch`.
             save_during_training (bool, optional): Whether or not to save the model periodically
@@ -421,12 +368,6 @@ class Training:
             summaries_dir (string, optional): The full path of the directory to which to
                 write the summaries protocol buffers.
             summaries_name (string, optional): The name of the summaries buffers.
-            training_loss_display_averaging (int, optional): During training, the current
-                training loss is always displayed. Since training on mini-batches has the effect
-                that the loss might jump from training step to training step, this parameter
-                allows to average the displayed loss over tha lasst `training_loss_display_averaging`
-                training steps so that it shows a more representative picture of the actual
-                current loss.
         '''
 
         # Check for a GPU
@@ -441,12 +382,11 @@ class Training:
         if (eval_dataset == 'val') and ((self.val_dataset is None) or (eval_steps is None)):
             raise ValueError("When eval_dataset == 'val', a `val_dataset` and `val_steps` must be passed.")
 
-        for metric in metrics:
-            if not metric in ['loss', 'accuracy']:
-                raise ValueError("{} is not a valid metric. Valid metrics are ['loss', 'accuracy']".format(metric))
+        self._initialize_metrics()
 
-        if (not monitor in metrics) and (not monitor == 'loss'):
-            raise ValueError('You are trying to monitor {}, but it is not in `metrics` and is therefore not being computed.'.format(monitor))
+        if monitor == 'loss': monitor = 'mean_loss'
+        if (not monitor in self.metric_names):
+            raise ValueError('You are trying to monitor {}, which is not an available metric.'.format(monitor))
 
         if eval_steps is None:
             eval_steps = steps_per_epoch
@@ -456,14 +396,22 @@ class Training:
         self.g_step = self.sess.run(self.global_step)
         learning_rate = learning_rate_schedule(self.g_step)
 
-        self._initialize_metrics(metrics)
-
         # Set up the summary file writers.
         if record_summaries:
             training_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name),
                                                     graph=self.sess.graph)
-            if len(metrics) > 0:
+            if not (eval_frequency is None):
                 evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name+'_eval'))
+
+        # Define the fetches and feed dict.
+        fetches_summaries = self.metric_value_tensors + [self.global_step,
+                                                         self.training_summaries,
+                                                         self.train_step] + self.metric_update_ops + self.model.updates
+        fetches_no_summaries = self.metric_value_tensors + [self.global_step,
+                                                            self.train_step] + self.metric_update_ops + self.model.updates
+        feed_dict = {self.iterator_handle: self.train_iterator_handle,
+                     self.learning_rate: learning_rate,
+                     tf.keras.backend.learning_phase(): 1}
 
         for epoch in range(1, epochs+1):
 
@@ -471,38 +419,26 @@ class Training:
             # Run the training for this epoch.
             ##############################################################
 
-            loss_history = deque(maxlen=training_loss_display_averaging)
-
             tr = trange(steps_per_epoch, file=sys.stdout)
             tr.set_description('Epoch {}/{}'.format(epoch, epochs))
 
-            if not (self.val_dataset is None):
-                # Switch to the training dataset iterator in case it hadn't already been set.
-                self.sess.run(self.switch_to_train_dataset)
+            # Reset all stateful metrics before this epoch begins.
+            self.sess.run(self.metrics_reset_op)
 
             for train_step in tr:
 
                 if record_summaries and (self.g_step % summaries_frequency == 0):
-                    _, current_loss, self.g_step, training_summary = self.sess.run([self.train_op,
-                                                                                    self.total_loss,
-                                                                                    self.global_step,
-                                                                                    self.training_summaries],
-                                                                                   feed_dict={self.learning_rate: learning_rate})
-                    training_writer.add_summary(summary=training_summary, global_step=self.g_step)
+                    ret = self.sess.run(fetches=fetches_summaries, feed_dict=feed_dict)
+                    self.g_step = ret[len(self.metric_value_tensors)]
+                    training_writer.add_summary(summary=ret[len(self.metric_value_tensors)+1], global_step=self.g_step)
                 else:
-                    _, current_loss, self.g_step = self.sess.run([self.train_op,
-                                                                  self.total_loss,
-                                                                  self.global_step],
-                                                                 feed_dict={self.learning_rate: learning_rate,})
+                    ret = self.sess.run(fetches=fetches_no_summaries, feed_dict=feed_dict)
+                    self.g_step = ret[len(self.metric_value_tensors)]
 
                 self.variables_updated = True
+                self.training_loss = ret[0]
 
-                loss_history.append(current_loss)
-                losses = np.array(loss_history)
-                self.training_loss = np.mean(losses)
-
-                tr.set_postfix(ordered_dict={'loss': self.training_loss,
-                                             'learning rate': learning_rate})
+                tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret[:len(self.metric_value_tensors)])))
 
                 learning_rate = learning_rate_schedule(self.g_step)
 
@@ -510,7 +446,7 @@ class Training:
             # Maybe evaluate the model after this epoch.
             ##############################################################
 
-            if (len(metrics) > 0) and (epoch % eval_frequency == 0):
+            if (not (eval_frequency is None )) and (epoch % eval_frequency == 0):
 
                 if eval_dataset == 'train':
                     description = 'Evaluation on training dataset'
@@ -595,28 +531,24 @@ class Training:
         tr = trange(num_batches, file=sys.stdout)
         tr.set_description(description)
 
-        # Initialize the iterator with the evaluation dataset.
+        # Set the correct iterator handle for the evaluation dataset.
         if eval_dataset == 'val':
-            # Switch to the validation dataset iterator.
-            self.sess.run(self.switch_to_val_dataset)
+            feed_dict = {self.iterator_handle: self.val_iterator_handle,
+                         tf.keras.backend.learning_phase(): 0}
         else:
-            # Switch to the training dataset iterator in case it hadn't already been set.
-            self.sess.run(self.switch_to_train_dataset)
+            feed_dict = {self.iterator_handle: self.train_iterator_handle,
+                         tf.keras.backend.learning_phase(): 0}
 
         # Accumulate metrics in batches.
         for step in tr:
 
-            self.sess.run(self.metric_update_ops)
+            ret = self.sess.run(self.metric_value_tensors + self.metric_update_ops, feed_dict=feed_dict)
 
-        # Compute final metric values.
-        self.metric_values = self.sess.run(self.metric_value_tensors)
+            tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret[:len(self.metric_value_tensors)])))
 
-        evaluation_results_string = ''
-        for i, metric_name in enumerate(self.metric_names):
-            evaluation_results_string += metric_name + ': {:.4f}  '.format(self.metric_values[i])
-        print(evaluation_results_string)
+        self.metric_values = ret[:len(self.metric_value_tensors)]
 
-    def evaluate(self, eval_dataset, num_batches, metrics={'loss', 'accuracy'}, dataset='val'):
+    def evaluate(self, eval_dataset, num_batches, dataset='val'):
         '''
         Evaluates the model on the given metrics on the data in `dataset`.
 
