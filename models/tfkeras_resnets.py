@@ -533,14 +533,14 @@ def build_single_block_resnet(image_size,
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation=fc_activation, kernel_regularizer=l2(l2_regularization), name='fc')(x)
+        x = Dense(num_classes, activation=fc_activation, kernel_initializer='he_normal', kernel_regularizer=l2(l2_regularization), name='fc')(x)
 
     # Create the model.
     model = tf.keras.models.Model(input_tensor, x, name=name)
 
     return model
 
-def build_resnet(image_size,
+def build_resnet(image_shape,
                  kernel_type='antisymmetric',
                  include_top=True,
                  fc_activation=None,
@@ -561,7 +561,7 @@ def build_resnet(image_size,
     of five stages of ResNet blocks. Each stage consists of one or more identical blocks.
 
     Arguments:
-        image_size (tuple): A tuple `(height, width, channels)` of three integers representing the size
+        image_shape (tuple): A tuple `(height, width, channels)` of three integers representing the size
             and number of channels of the image input.
         kernel_type (str, optional): If 'antisymmetric', will build a ResNet in which
             all 3-by-3 convolution kernels are anti-centrosymmetric.
@@ -615,6 +615,39 @@ def build_resnet(image_size,
             after each convolutional layer.
     '''
 
+    build_function = get_resnet_build_function(kernel_type=kernel_type,
+                                               include_top=include_top,
+                                               fc_activation=fc_activation,
+                                               num_classes=num_classes,
+                                               l2_regularization=l2_regularization,
+                                               subtract_mean=subtract_mean,
+                                               divide_by_stddev=divide_by_stddev,
+                                               version=version,
+                                               preset=preset,
+                                               blocks_per_stage=blocks_per_stage,
+                                               filters_per_block=filters_per_block,
+                                               use_batch_norm=use_batch_norm)
+
+    input_tensor = tf.keras.layers.Input(shape=image_shape)
+
+    return build_function(input_tensor)
+
+def get_resnet_build_function(kernel_type='antisymmetric',
+                              include_top=True,
+                              fc_activation=None,
+                              num_classes=None,
+                              l2_regularization=0.0,
+                              subtract_mean=None,
+                              divide_by_stddev=None,
+                              version=1,
+                              preset=None,
+                              blocks_per_stage=[3, 4, 6, 3],
+                              filters_per_block=[[64, 64, 256],
+                                                [128, 128, 512],
+                                                [256, 256, 1024],
+                                                [512, 512, 2048]],
+                              use_batch_norm=True):
+
     if include_top and (num_classes is None):
         raise ValueError("You must pass a positive integer for `num_classes` if `include_top` is `True`.")
 
@@ -655,74 +688,68 @@ def build_resnet(image_size,
         antisymmetric = False
         name += '_regular'
 
-    img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
-
-    ############################################################################
-    # Define functions for the Lambda layers below.
-    ############################################################################
-
-    def identity_layer(tensor):
-        return tensor
-
-    def input_mean_shift(tensor):
-        return tensor - np.array(subtract_mean)
-
-    def input_stddev_normalization(tensor):
-        return tensor / np.array(divide_by_stddev)
-
-    ############################################################################
-    # Build the network.
-    ############################################################################
-
-    input_tensor = Input(shape=(img_height, img_width, img_channels))
-
-    # The following identity layer is only needed so that the subsequent lambda layers can be optional.
-    x1 = Lambda(identity_layer, output_shape=(img_height, img_width, img_channels), name='identity_layer')(input_tensor)
     if not (subtract_mean is None):
-        x1 = Lambda(input_mean_shift, output_shape=(img_height, img_width, img_channels), name='input_mean_normalization')(x1)
+        subtract_mean = np.array(subtract_mean)
+
     if not (divide_by_stddev is None):
-        x1 = Lambda(input_stddev_normalization, output_shape=(img_height, img_width, img_channels), name='input_stddev_normalization')(x1)
+        divide_by_stddev = np.array(divide_by_stddev)
 
-    # Stage 1
-    x = ZeroPadding2D(padding=(3, 3), name='conv1_pad')(x1)
-    x = Conv2D(filters=64,
-               kernel_size=(7, 7),
-               strides=(2, 2),
-               padding='valid',
-               kernel_initializer='he_normal',
-               kernel_regularizer=l2(l2_regularization),
-               name='conv1')(x)
-    if use_batch_norm:
-        x = BatchNormalization(axis=3, name='bn_conv1')(x)
-    x = Activation('relu')(x)
-    x = ZeroPadding2D(padding=(1, 1), name='pool1_pad')(x)
-    x = MaxPooling2D(pool_size=(3, 3), strides=(2, 2), name='stage1_pooling')(x)
+    def _build_function(input_tensor):
+        '''
+        Build the network given an input tensor.
+        '''
 
-    # Stage 2
-    x = bottleneck_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, version=version, strides=(1,1), kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[0]):
-        x = bottleneck_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
+        input_shape = list(input_tensor.shape)
 
-    # Stage 3
-    x = bottleneck_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[1]):
-        x = bottleneck_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
+        # The following identity layer is only needed so that the subsequent lambda layers can be optional.
+        x1 = Lambda(lambda x: x, output_shape=input_shape, name='identity_layer')(input_tensor)
+        if not (subtract_mean is None):
+            x1 = Lambda(lambda x: x - subtract_mean, output_shape=input_shape, name='input_mean_shift')(x1)
+        if not (divide_by_stddev is None):
+            x1 = Lambda(lambda x: x / divide_by_stddev, output_shape=input_shape, name='input_scaling')(x1)
 
-    # Stage 4
-    x = bottleneck_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[2]):
-        x = bottleneck_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
+        # Stage 1
+        x = ZeroPadding2D(padding=(3, 3), name='conv1_pad')(x1)
+        x = Conv2D(filters=64,
+                   kernel_size=(7, 7),
+                   strides=(2, 2),
+                   padding='valid',
+                   kernel_initializer='he_normal',
+                   kernel_regularizer=l2(l2_regularization),
+                   name='conv1')(x)
+        if use_batch_norm:
+            x = BatchNormalization(axis=3, name='bn_conv1')(x)
+        x = Activation('relu')(x)
+        x = ZeroPadding2D(padding=(1, 1), name='pool1_pad')(x)
+        x = MaxPooling2D(pool_size=(3, 3), strides=(2, 2), name='stage1_pooling')(x)
 
-    # Stage 5
-    x = bottleneck_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[3]):
-        x = bottleneck_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
+        # Stage 2
+        x = bottleneck_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, version=version, strides=(1,1), kernel_regularizer=l2(l2_regularization))
+        for i in range(1, blocks_per_stage[0]):
+            x = bottleneck_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
 
-    if include_top:
-        x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation=fc_activation, kernel_regularizer=l2(l2_regularization), name='fc')(x)
+        # Stage 3
+        x = bottleneck_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        for i in range(1, blocks_per_stage[1]):
+            x = bottleneck_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
 
-    # Create the model.
-    model = tf.keras.models.Model(input_tensor, x, name=name)
+        # Stage 4
+        x = bottleneck_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        for i in range(1, blocks_per_stage[2]):
+            x = bottleneck_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
 
-    return model
+        # Stage 5
+        x = bottleneck_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        for i in range(1, blocks_per_stage[3]):
+            x = bottleneck_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
+
+        if include_top:
+            x = GlobalAveragePooling2D(name='global_average_pooling')(x)
+            x = Dense(num_classes, activation=fc_activation, kernel_initializer='he_normal', kernel_regularizer=l2(l2_regularization), name='fc')(x)
+
+        # Create the model.
+        model = tf.keras.models.Model(input_tensor, x, name=name)
+
+        return model
+
+    return _build_function
