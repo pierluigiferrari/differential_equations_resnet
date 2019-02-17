@@ -35,4 +35,4 @@ def add_mean_norm_summary(variable, scope, order='euclidean'):
         equivalent to the Frobenius norm if variable is a matrix and equivalent to the 2-norm for vectors.
     '''
     mean_norm = tf.norm(variable, ord=order) / tf.to_float(tf.size(variable))
-    return tf.summary.scalar('{}_mean_{}_norm'.format(scope, order), mean_norm)
+    return tf.summary.scalar(name='{}_mean_{}_norm'.format(scope, order), tensor=mean_norm)
