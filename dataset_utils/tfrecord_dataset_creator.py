@@ -80,10 +80,12 @@ class TFRecordDatasetCreator:
             # Repeat the dataset.
             self.dataset = self.dataset.repeat(self.num_epochs)
 
-    def create_dataset(self):
+    def create_dataset(self, prefetch=None):
 
         self._process()
         dataset = self.dataset.batch(self.batch_size)
+        if not prefetch is None:
+            dataset = dataset.prefetch(buffer_size=prefetch)
         return dataset
 
     def create_input_function(self):
