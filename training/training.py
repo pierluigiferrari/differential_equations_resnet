@@ -23,12 +23,11 @@ import warnings
 from tqdm import trange
 import sys
 import os.path
-import scipy.misc
+import pathlib
 import shutil
 from glob import glob
-from collections import deque
-import numpy as np
 import time
+import csv
 
 from training.tf_variable_summaries import add_mean_norm_summary
 
@@ -122,6 +121,7 @@ class Training:
          self.metrics_reset_op) = self._build_metrics()
         # Add gradient metrics.
         self.gradient_mean_norms = self._build_gradient_metrics()
+        self.gradient_mean_norm_names = [tensor.name.split(':')[0].split('metrics/')[1] for tensor in self.gradient_mean_norms]
         # Add summary ops for TensorBoard.
         (self.training_summaries,
          self.evaluation_summaries) = self._build_summary_ops()
@@ -271,8 +271,8 @@ class Training:
 
             # Summaries that compute the mean norms of the gradients and variables.
             if 'mean_gradient_norms' in self.summaries:
-                for gradient_mean_norm in self.gradient_mean_norms:
-                    training_summaries.append(tf.summary.scalar(name=gradient_mean_norm.name, tensor=gradient_mean_norm))
+                for gradient_mean_norm, name in zip(self.gradient_mean_norms, self.gradient_mean_norm_names):
+                    training_summaries.append(tf.summary.scalar(name=name, tensor=gradient_mean_norm))
 
             if 'mean_weight_norms' in self.summaries:
                 for gradient, variable in self.grads_and_vars:
@@ -341,7 +341,9 @@ class Training:
               record_summaries=True,
               summaries_frequency=10,
               summaries_dir=None,
-              summaries_name=None):
+              summaries_name=None,
+              csv_logger_dir=None,
+              csv_logger_name=None):
         '''
         Train the model.
 
@@ -430,15 +432,20 @@ class Training:
             if not (eval_frequency is None):
                 evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name+'_eval'))
 
+            pathlib.Path(csv_logger_dir).mkdir(parents=True, exist_ok=True)
+            csv_file = open(os.path.join(csv_logger_dir,'{}.csv'.format(csv_logger_name)), 'a', newline='')
+            csv_writer = csv.writer(csv_file, delimiter=' ')
+            csv_writer.writerow(['global_step'] + self.gradient_mean_norm_names)
+
         # Define the fetches and feed dict.
-        fetches_summaries = {'gloabal_step': self.global_step,
+        fetches_summaries = {'global_step': self.global_step,
                              'training_step': self.train_step,
                              'metric_updates': self.metric_update_ops,
                              'metric_values': self.metric_value_tensors,
                              'gradient_mean_norms': self.gradient_mean_norms,
                              'training_summaries': self.training_summaries,
                              'layer_updates': self.model.updates}
-        fetches_no_summaries = {'gloabal_step': self.global_step,
+        fetches_no_summaries = {'global_step': self.global_step,
                                 'training_step': self.train_step,
                                 'metric_updates': self.metric_update_ops,
                                 'metric_values': self.metric_value_tensors,
@@ -454,9 +461,9 @@ class Training:
 
         for epoch in range(1, epochs+1):
 
-            ##############################################################
+            ####################################################################
             # Run the training for this epoch.
-            ##############################################################
+            ####################################################################
 
             tr = trange(steps_per_epoch, file=sys.stdout)
             tr.set_description('Epoch {}/{}'.format(epoch, epochs))
@@ -468,22 +475,23 @@ class Training:
 
                 if record_summaries and (self.g_step % summaries_frequency == 0):
                     ret = self.sess.run(fetches=fetches_summaries, feed_dict=feed_dict)
-                    self.g_step = ret[len(self.metric_value_tensors)]
-                    training_writer.add_summary(summary=ret[len(self.metric_value_tensors)+1], global_step=self.g_step)
+                    self.g_step = ret['global_step']
+                    training_writer.add_summary(summary=ret['training_summaries'], global_step=self.g_step)
+                    csv_writer.writerow([self.g_step - 1] + ret['gradient_mean_norms'])
                 else:
                     ret = self.sess.run(fetches=fetches_no_summaries, feed_dict=feed_dict)
-                    self.g_step = ret[len(self.metric_value_tensors)]
+                    self.g_step = ret['global_step']
 
                 self.variables_updated = True
-                self.training_loss = ret[0]
+                self.training_loss = ret['metric_values'][0]
 
-                tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret[:len(self.metric_value_tensors)])))
+                tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret['metric_values'])))
 
                 learning_rate = learning_rate_schedule(self.g_step)
 
-            ##############################################################
+            ####################################################################
             # Maybe evaluate the model after this epoch.
-            ##############################################################
+            ####################################################################
 
             if (not (eval_frequency is None )) and (epoch % eval_frequency == 0):
 
@@ -501,9 +509,9 @@ class Training:
                     evaluation_summary = self.sess.run(self.evaluation_summaries)
                     evaluation_writer.add_summary(summary=evaluation_summary, global_step=self.g_step)
 
-            ##############################################################
+            ####################################################################
             # Maybe save the model after this epoch.
-            ##############################################################
+            ####################################################################
 
             if save_during_training and (epoch % save_frequency == 0):
 
@@ -535,9 +543,9 @@ class Training:
                               include_last_training_loss=True,
                               include_metrics=(len(self.metric_names) > 0))
 
-            ##############################################################
+            ####################################################################
             # Update the current best metric values.
-            ##############################################################
+            ####################################################################
 
             if self.training_loss < self.best_training_loss:
                 self.best_training_loss = self.training_loss
@@ -549,6 +557,9 @@ class Training:
                         self.best_metric_values[i] = self.metric_values[i]
                     elif (metric_name in ['accuracry']) and (self.metric_values[i] > self.best_metric_values[i]):
                         self.best_metric_values[i] = self.metric_values[i]
+
+        if record_summaries:
+            csv_file.close()
 
     def _evaluate(self, eval_dataset, metrics, num_batches, description='Running evaluation'):
         '''
