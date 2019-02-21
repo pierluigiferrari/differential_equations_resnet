@@ -38,7 +38,12 @@ class Training:
                  optimizer,
                  train_dataset,
                  val_dataset=None,
-                 summaries=['mean_gradient_norms']):
+                 record_summaries=True,
+                 summaries=['mean_gradient_norms'],
+                 summaries_dir=None,
+                 summaries_name=None,
+                 csv_logger_dir=None,
+                 csv_logger_name=None):
         '''
         Arguments:
             model (function): A function that takes as input an input tensor (the output of a tf.keras.layers.Input object)
@@ -49,7 +54,13 @@ class Training:
                 iterator for the dataset will be created internally. It is recommended to set the dataset to infinite
                 repetition.
             val_dataset (tf.data.Dataset object, optional): A tf.data.Dataset object, the validation dataset.
+            record_summaries (bool, optional): Whether or not to record TensorBoard summaries.
             summaries (list, optional): TODO.
+            summaries_dir (str, optional): The full path of the directory to which to
+                write the summaries protocol buffers.
+            summaries_name (str, optional): The name of the summaries buffers.
+            csv_logger_dir (str, optional): TODO.
+            csv_logger_name (str, optional): TODO.
         '''
         # Check TensorFlow version
         assert LooseVersion(tf.__version__) >= LooseVersion('1.0'), 'This program requires TensorFlow version 1.0 or newer. You are using {}'.format(tf.__version__)
@@ -68,7 +79,12 @@ class Training:
         self.optimizer = optimizer
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
+        self.record_summaries = record_summaries
         self.summaries = summaries
+        self.summaries_dir = summaries_dir
+        self.summaries_name = summaries_name
+        self.csv_logger_dir = csv_logger_dir
+        self.csv_logger_name = csv_logger_name
 
         self.variables_updated = False # Keep track of whether any variable values changed since this model was last saved.
         self.eval_dataset = None # Which dataset to use for evaluation during training. Only relevant for training.
@@ -128,6 +144,52 @@ class Training:
         # Initialize the global and local (for the metrics) variables.
         self.sess.run(tf.global_variables_initializer())
         self.sess.run(tf.local_variables_initializer())
+        # Add a saver.
+        self.saver = tf.train.Saver(var_list=None,
+                                    reshape=False,
+                                    max_to_keep=5,
+                                    keep_checkpoint_every_n_hours=10000.0)
+
+        ########################################################################
+        # Perform other preparatory work.
+        ########################################################################
+
+        self._initialize_metrics()
+
+        # Set up the summary file writers.
+        if self.record_summaries:
+            self.training_writer = tf.summary.FileWriter(logdir=os.path.join(self.summaries_dir, self.summaries_name),
+                                                    graph=self.sess.graph)
+            self.evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(self.summaries_dir, self.summaries_name + '_eval'))
+
+            # Create the directory for the CSV file if it doesn't already exist.
+            pathlib.Path(self.csv_logger_dir).mkdir(parents=True, exist_ok=True)
+            # Open existing CSV file or create a new one. The stream is positioned at the end of the file and anything
+            # written to the file will always be written at the end of the file, regardless of intermediate 'seek()'
+            # calls.
+            self.csv_file = open(os.path.join(self.csv_logger_dir,'{}.csv'.format(self.csv_logger_name)), 'a+', newline='')
+            # Check whether this file is new (and thus empty) or whether it already has content in it.
+            self.csv_file.seek(0)
+            is_empty = self.csv_file.readline() == ''
+            # Create a CSV writer object.
+            self.csv_writer = csv.writer(self.csv_file, delimiter=' ')
+            # Write a header row to the file only if it is empty.
+            if is_empty:
+                self.csv_writer.writerow(['global_step'] + self.gradient_mean_norm_names)
+
+        # Define the fetches and feed dict.
+        self.fetches_summaries = {'global_step': self.global_step,
+                                  'training_step': self.train_step,
+                                  'metric_updates': self.metric_update_ops,
+                                  'metric_values': self.metric_value_tensors,
+                                  'gradient_mean_norms': self.gradient_mean_norms,
+                                  'training_summaries': self.training_summaries,
+                                  'layer_updates': self.model.updates}
+        self.fetches_no_summaries = {'global_step': self.global_step,
+                                     'training_step': self.train_step,
+                                     'metric_updates': self.metric_update_ops,
+                                     'metric_values': self.metric_value_tensors,
+                                     'layer_updates': self.model.updates}
 
     def _build_data_iterators(self):
         '''
@@ -326,7 +388,6 @@ class Training:
               epochs,
               steps_per_epoch,
               learning_rate_schedule,
-              metrics={},
               eval_dataset='train',
               eval_frequency=5,
               eval_steps=None,
@@ -336,14 +397,9 @@ class Training:
               save_tags=['default'],
               save_name='',
               save_frequency=5,
-              saver='saved_model',
+              saver='train_saver',
               monitor='loss',
-              record_summaries=True,
-              summaries_frequency=10,
-              summaries_dir=None,
-              summaries_name=None,
-              csv_logger_dir=None,
-              csv_logger_name=None):
+              summaries_frequency=10):
         '''
         Train the model.
 
@@ -390,13 +446,9 @@ class Training:
             monitor (string, optional): The name of the metric that is to be monitored in
                 order to decide whether the model should be saved. Can be one of
                 `{'loss', 'accuracy'}`, which are the currently available metrics.
-            record_summaries (bool, optional): Whether or not to record TensorBoard summaries.
             summaries_frequency (int, optional): How often summaries should be logged for
                 tensors which are updated at every training step. The summaries for such tensors
                 will be recorded every `summaries_frequency` training steps.
-            summaries_dir (string, optional): The full path of the directory to which to
-                write the summaries protocol buffers.
-            summaries_name (string, optional): The name of the summaries buffers.
         '''
 
         # Check for a GPU
@@ -425,40 +477,6 @@ class Training:
         self.g_step = self.sess.run(self.global_step)
         learning_rate = learning_rate_schedule(self.g_step)
 
-        # Set up the summary file writers.
-        if record_summaries:
-            training_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name),
-                                                    graph=self.sess.graph)
-            if not (eval_frequency is None):
-                evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(summaries_dir, summaries_name+'_eval'))
-
-            pathlib.Path(csv_logger_dir).mkdir(parents=True, exist_ok=True)
-            csv_file = open(os.path.join(csv_logger_dir,'{}.csv'.format(csv_logger_name)), 'a', newline='')
-            csv_writer = csv.writer(csv_file, delimiter=' ')
-            csv_writer.writerow(['global_step'] + self.gradient_mean_norm_names)
-
-        # Define the fetches and feed dict.
-        fetches_summaries = {'global_step': self.global_step,
-                             'training_step': self.train_step,
-                             'metric_updates': self.metric_update_ops,
-                             'metric_values': self.metric_value_tensors,
-                             'gradient_mean_norms': self.gradient_mean_norms,
-                             'training_summaries': self.training_summaries,
-                             'layer_updates': self.model.updates}
-        fetches_no_summaries = {'global_step': self.global_step,
-                                'training_step': self.train_step,
-                                'metric_updates': self.metric_update_ops,
-                                'metric_values': self.metric_value_tensors,
-                                'layer_updates': self.model.updates}
-        #fetches_summaries = self.metric_value_tensors + [self.global_step,
-        #                                                 self.training_summaries,
-        #                                                 self.train_step] + self.metric_update_ops + self.model.updates
-        #fetches_no_summaries = self.metric_value_tensors + [self.global_step,
-        #                                                    self.train_step] + self.metric_update_ops + self.model.updates
-        feed_dict = {self.iterator_handle: self.train_iterator_handle,
-                     self.learning_rate: learning_rate,
-                     tf.keras.backend.learning_phase(): 1}
-
         for epoch in range(1, epochs+1):
 
             ####################################################################
@@ -473,19 +491,21 @@ class Training:
 
             for train_step in tr:
 
-                if record_summaries and (self.g_step % summaries_frequency == 0):
-                    ret = self.sess.run(fetches=fetches_summaries, feed_dict=feed_dict)
-                    self.g_step = ret['global_step']
-                    training_writer.add_summary(summary=ret['training_summaries'], global_step=self.g_step)
-                    csv_writer.writerow([self.g_step - 1] + ret['gradient_mean_norms'])
+                if self.record_summaries and (self.g_step % summaries_frequency == 0):
+                    ret = self.sess.run(fetches=self.fetches_summaries, feed_dict={self.iterator_handle: self.train_iterator_handle,
+                                                                                   self.learning_rate: learning_rate,
+                                                                                   tf.keras.backend.learning_phase(): 1})
+                    self.training_writer.add_summary(summary=ret['training_summaries'], global_step=self.g_step)
+                    self.csv_writer.writerow([self.g_step - 1] + ret['gradient_mean_norms'])
                 else:
-                    ret = self.sess.run(fetches=fetches_no_summaries, feed_dict=feed_dict)
-                    self.g_step = ret['global_step']
-
+                    ret = self.sess.run(fetches=self.fetches_no_summaries, feed_dict={self.iterator_handle: self.train_iterator_handle,
+                                                                                      self.learning_rate: learning_rate,
+                                                                                      tf.keras.backend.learning_phase(): 1})
+                self.g_step = ret['global_step']
                 self.variables_updated = True
                 self.training_loss = ret['metric_values'][0]
 
-                tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret['metric_values'])))
+                tr.set_postfix(ordered_dict=dict(zip(self.metric_names + ['global_step'], ret['metric_values'] + [self.g_step])))
 
                 learning_rate = learning_rate_schedule(self.g_step)
 
@@ -501,13 +521,12 @@ class Training:
                     description = 'Evaluation on validation dataset'
 
                 self._evaluate(eval_dataset=eval_dataset,
-                               metrics=metrics,
                                num_batches=eval_steps,
                                description=description)
 
-                if record_summaries:
+                if self.record_summaries:
                     evaluation_summary = self.sess.run(self.evaluation_summaries)
-                    evaluation_writer.add_summary(summary=evaluation_summary, global_step=self.g_step)
+                    self.evaluation_writer.add_summary(summary=evaluation_summary, global_step=self.g_step)
 
             ####################################################################
             # Maybe save the model after this epoch.
@@ -558,10 +577,7 @@ class Training:
                     elif (metric_name in ['accuracry']) and (self.metric_values[i] > self.best_metric_values[i]):
                         self.best_metric_values[i] = self.metric_values[i]
 
-        if record_summaries:
-            csv_file.close()
-
-    def _evaluate(self, eval_dataset, metrics, num_batches, description='Running evaluation'):
+    def _evaluate(self, eval_dataset, num_batches, description='Running evaluation'):
         '''
         Internal method used by both `evaluate()` and `train()` that performs
         the actual evaluation. For the first three arguments, please refer
@@ -592,11 +608,12 @@ class Training:
         # Accumulate metrics in batches.
         for step in tr:
 
-            ret = self.sess.run(self.metric_value_tensors + self.metric_update_ops, feed_dict=feed_dict)
+            ret = self.sess.run(fetches={'metric_values': self.metric_value_tensors,
+                                         'metric_update_ops': self.metric_update_ops}, feed_dict=feed_dict)
 
-            tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret[:len(self.metric_value_tensors)])))
+            tr.set_postfix(ordered_dict=dict(zip(self.metric_names, ret['metric_values'])))
 
-        self.metric_values = ret[:len(self.metric_value_tensors)]
+        self.metric_values = ret['metric_values']
 
     def evaluate(self, eval_dataset, num_batches, dataset='val'):
         '''
@@ -633,9 +650,9 @@ class Training:
         if not eval_dataset in {'train', 'val'}:
             raise ValueError("`dataset` must be either 'train' or 'val'.")
 
-        self._initialize_metrics(metrics)
+        self._initialize_metrics()
 
-        self._evaluate(eval_dataset, metrics, num_batches, description='Running evaluation')
+        self._evaluate(eval_dataset, num_batches, description='Running evaluation')
 
         if eval_dataset == 'val':
             self.eval_dataset = 'val'
@@ -714,6 +731,9 @@ class Training:
         if not saver in {'saved_model', 'train_saver'}:
             raise ValueError("Unexpected value for `saver`: Can be either 'saved_model' or 'train_saver', but received '{}'.".format(saver))
 
+        # Create the save directory if it doesn't already exist.
+        pathlib.Path(model_save_dir).mkdir(parents=True, exist_ok=True)
+
         if self.training_loss is None:
             include_last_training_loss = False
 
@@ -740,14 +760,10 @@ class Training:
             saved_model_builder.add_meta_graph_and_variables(sess=self.sess, tags=tags)
             saved_model_builder.save()
         else:
-            saver = tf.train.Saver(var_list=None,
-                                   reshape=False,
-                                   max_to_keep=5,
-                                   keep_checkpoint_every_n_hours=10000.0)
-            saver.save(self.sess,
-                       save_path=os.path.join(model_save_dir, model_name, 'variables'),
-                       write_meta_graph=True,
-                       write_state=True)
+            self.saver.save(self.sess,
+                            save_path=os.path.join(model_save_dir, model_name, 'variables'),
+                            write_meta_graph=True,
+                            write_state=True)
 
         self.variables_updated = False
 
@@ -756,8 +772,7 @@ class Training:
         Load variable values into the current model. Only works for variables that
         were saved with 'train_saver'. See `save()` for details.
         '''
-        saver = tf.train.Saver(var_list=None)
-        saver.restore(self.sess, path)
+        self.saver.restore(self.sess, path)
 
     def close(self):
         '''
@@ -765,4 +780,6 @@ class Training:
         with the model in order to release the resources it occupies.
         '''
         self.sess.close()
+        if self.record_summaries:
+            self.csv_file.close()
         print("The session has been closed.")
