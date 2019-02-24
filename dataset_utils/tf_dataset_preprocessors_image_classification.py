@@ -153,3 +153,29 @@ class RandomFlipLeftRight:
         dataset = dataset.map(lambda image, label: (tf.image.random_flip_left_right(image), label),
                               num_parallel_calls=self.num_parallel_calls)
         return dataset
+
+class RandomBrightness:
+
+    def __init__(self, max_delta=0.5, num_parallel_calls=None):
+        self.max_delta = max_delta
+        self.num_parallel_calls = num_parallel_calls
+
+    def __call__(self, dataset):
+        dataset = dataset.map(lambda image, label: (tf.image.random_brightness(image,
+                                                                               max_delta=self.max_delta), label),
+                              num_parallel_calls=self.num_parallel_calls)
+        return dataset
+
+class RandomSaturation:
+
+    def __init__(self, lower=0.5, upper=1.5, num_parallel_calls=None):
+        self.lower = lower
+        self.upper = upper
+        self.num_parallel_calls = num_parallel_calls
+
+    def __call__(self, dataset):
+        dataset = dataset.map(lambda image, label: (tf.image.random_saturation(image,
+                                                                               lower=self.lower,
+                                                                               upper=self.upper), label),
+                              num_parallel_calls=self.num_parallel_calls)
+        return dataset
