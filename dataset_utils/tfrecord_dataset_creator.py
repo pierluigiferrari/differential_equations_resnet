@@ -33,7 +33,8 @@ class TFRecordDatasetCreator:
                  shuffle=True,
                  shuffle_buffer_size=None,
                  num_parallel_reads=None,
-                 num_parallel_calls=None):
+                 num_parallel_calls=None,
+                 prefetch=None):
 
         if len(tfrecord_paths) != len(set(tfrecord_paths)):
             raise ValueError('tfrecord_paths {} are not unique.'.format(tfrecord_paths))
@@ -52,6 +53,7 @@ class TFRecordDatasetCreator:
         self.shuffle_buffer_size = shuffle_buffer_size
         self.num_parallel_reads = num_parallel_reads
         self.num_parallel_calls = num_parallel_calls
+        self.prefetch = prefetch
 
     def _process(self):
 
@@ -74,27 +76,30 @@ class TFRecordDatasetCreator:
 
         # Shuffle the dataset.
         if self.shuffle:
-            self.dataset = self.dataset.shuffle(buffer_size=self.shuffle_buffer_size)
+            self.dataset = self.dataset.shuffle(buffer_size=self.shuffle_buffer_size,
+                                                reshuffle_each_iteration=True)
 
         if self.repeat:
             # Repeat the dataset.
             self.dataset = self.dataset.repeat(self.num_epochs)
 
-    def create_dataset(self, prefetch=None):
+        if not (self.batch_size is None):
+            self.dataset = self.dataset.batch(self.batch_size)
+
+        if not self.prefetch is None:
+            self.dataset = self.dataset.prefetch(buffer_size=self.prefetch)
+
+    def create_dataset(self):
 
         self._process()
-        dataset = self.dataset.batch(self.batch_size)
-        if not prefetch is None:
-            dataset = dataset.prefetch(buffer_size=prefetch)
-        return dataset
+        return self.dataset
 
     def create_input_function(self):
 
         def _input_function():
 
             self._process()
-            dataset = self.dataset.batch(self.batch_size)
-            iterator = dataset.make_one_shot_iterator()
+            iterator = self.dataset.make_one_shot_iterator()
             return iterator
 
         return _input_function
@@ -102,9 +107,8 @@ class TFRecordDatasetCreator:
     def create_generator(self):
 
         self._process()
-        dataset = self.dataset.batch(self.batch_size)
 
-        iterator = dataset.make_one_shot_iterator()
+        iterator = self.dataset.make_one_shot_iterator()
         batch = iterator.get_next()
 
         with tf.Session() as sess:
