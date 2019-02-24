@@ -55,22 +55,119 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
     '''
 
     def __init__(self,
-                 num_filters,
-                 use_bias=True,
+                 kernel_size,
+                 num_filters=None,
                  strides=(1,1),
+                 use_bias=True,
+                 kernel_initializer='he_normal',
+                 kernel_regularizer=None,
                  **kwargs):
         '''
         Arguments:
-            num_filters (int): The number of convolution filters to use.
-            use_bias (bool, optional): Whether or not to add a bias term.
+            kernel_size (int): The size of the two spatial dimensions of the quadratic kernel.
+            num_filters (int, optional): The number of convolution filters to use. If `None`,
+                the number of output filters will be the same as the number of input filters.
+                Note that this property is necessary in order to warrant an anti-symmetric
+                convolution matrix.
             strides (tuple, optional): The strides along the height and width dimensions
                 for the convolution.
+            use_bias (bool, optional): Whether or not to add a bias term.
         '''
 
         super(Conv2DAntisymmetric, self).__init__(**kwargs)
         self.num_filters = num_filters
-        self.use_bias = use_bias
+        self.kernel_size = kernel_size
         self.strides = strides
+        self.use_bias = use_bias
+        self.kernel_initializer = kernel_initializer
+        self.kernel_regularizer = kernel_regularizer
+
+    def build(self, input_shape):
+
+        kernel_height, kernel_width = self.kernel_size
+        in_channels = int(input_shape[-1])
+        if self.num_filters is None:
+            out_channels = in_channels
+        else:
+            out_channels = self.num_filters
+        dtype=tf.float32
+
+        kernel = [None] *
+        # Construct the kernel.
+        for o in range(out_channels):
+            for i in range(in_channels):
+                for h in range(kernel_height):
+                    for w in range(kernel_width):
+                        if o == i:
+                            # If this is the i'th in-channel of the i'th out-channel, the kernel needs to be anti-centrosymmetric spatially.
+
+
+                            a = self.add_weight(name='a',
+                                                shape=[1,1,1,1],
+                                                dtype=dtype,
+                                                initializer=tf.initializers.truncated_normal(mean=0.0,
+                                                                                             stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
+                                                                                             dtype=dtype),
+                                                regularizer=self.kernel_regularizer,
+                                                trainable=self.trainable)
+
+                    self.b = self.add_weight(name='b',
+                                             shape=[1,1,in_channels,self.num_filters],
+                                             dtype=dtype,
+                                             initializer=tf.initializers.truncated_normal(mean=0.0,
+                                                                                          stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
+                                                                                          dtype=dtype),
+                                             regularizer=self.kernel_regularizer,
+                                             trainable=self.trainable)
+
+                    self.c = self.add_weight(name='c',
+                                             shape=[1,1,in_channels,self.num_filters],
+                                             dtype=dtype,
+                                             initializer=tf.initializers.truncated_normal(mean=0.0,
+                                                                                          stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
+                                                                                          dtype=dtype),
+                                             regularizer=self.kernel_regularizer,
+                                             trainable=self.trainable)
+
+                    self.d = self.add_weight(name='d',
+                                             shape=[1,1,in_channels,self.num_filters],
+                                             dtype=dtype,
+                                             initializer=tf.initializers.truncated_normal(mean=0.0,
+                                                                                          stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
+                                                                                          dtype=dtype),
+                                             regularizer=None,
+                                             trainable=self.trainable)
+
+                    # 'e' constitutes the center element of the kernel, which must be zero and non-trainable.
+                    self.e = self.add_weight(name='e',
+                                             shape=[1,1,in_channels,self.num_filters],
+                                             dtype=dtype,
+                                             initializer=tf.initializers.zeros(dtype=dtype),
+                                             regularizer=None,
+                                             trainable=False)
+
+                    # The remaining elements of the kernel are just the additive inverses of the previous elements.
+                    self.f = -self.d
+                    self.g = -self.c
+                    self.h = -self.b
+                    self.i = -self.a
+
+                    # Put the nine individual spatial kernel elements together into one 3x3 kernel.
+                    kernel_row1 = tf.concat(values=[self.a,self.b,self.c],
+                                            axis=1,
+                                            name='kernel_row1')
+                    kernel_row2 = tf.concat(values=[self.d,self.e,self.f],
+                                            axis=1,
+                                            name='kernel_row2')
+                    kernel_row3 = tf.concat(values=[self.g,self.h,self.i],
+                                            axis=1,
+                                            name='kernel_row3')
+                    self.kernel = tf.concat(values=[kernel_row1,
+                                                    kernel_row2,
+                                                    kernel_row3],
+                                            axis=0,
+                                            name='skew_centrosymmetric_kernel')
+
 
     def build(self, input_shape):
 
@@ -205,3 +302,54 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
         '''
 
         return tf.keras.backend.batch_get_value([self.bias])[0]
+
+    def _get_centrosymmetric_matrix(self, prefix=None):
+        '''
+        Returns a tensor containing an (anti-) centrosymmetric matrix.
+
+        Arguments:
+            prefix (str, optional): A prefix string to use for the names of the individual
+                scalar variables that make up the matrix.
+        '''
+
+        if prefix is None: prefix = 'centro_sym'
+
+        # We'll create a (anti-) centrosymmetric matrix from individual scalar TensorFlow variables.
+        # We'll first store the references to these scalar variables in a Numpy array, then concatenate
+        # them all to one tensor.
+        variable_array = np.full(fill_value=None, shape=(self.kernel_size, self.kernel_size)) # Store references to scalar variables here.
+        for i in range(self.kernel_size):
+            for j in range(i, self.kernel_size): # Only half of the matrix entries are free variables.
+                if j > i or (j == i and i <= self.kernel_size // 2 - 1):
+                    variable = self.add_weight(name='{}_{}_{}'.format(prefix, i, j),
+                                               shape=[1, 1, 1, 1],
+                                               dtype=self.dtype,
+                                               initializer=self.initializer,
+                                               regularizer=self.kernel_regularizer,
+                                               trainable=self.trainable)
+                    # This is the definition of (anti-) centrosymmetry:
+                    variable_array[i, j] = variable
+                    variable_array[self.kernel_size - 1 - i, self.kernel_size - 1 - j] = -variable if self.anti else variable
+                elif j == i and i == self.kernel_size // 2 and self.kernel_size % 2 == 1: # For matrices of odd size, this is the central element.
+                    if self.anti:
+                        # For the anti-centrosymmetric case, the center element must be zero.
+                        # This also implies that this element must be non-trainable.
+                        variable_array[i, j] = self.add_weight(name='{}_{}_{}'.format(prefix, i, j),
+                                                               shape=[1, 1, 1, 1],
+                                                               dtype=self.dtype,
+                                                               initializer=tf.initializers.zeros(dtype=self.dtype),
+                                                               regularizer=None,
+                                                               trainable=False) # Must be non-trainable.
+                    else:
+                        variable_array[i, j] = self.add_weight(name='{}_{}_{}'.format(prefix, i, j),
+                                                               shape=[1, 1, 1, 1],
+                                                               dtype=self.dtype,
+                                                               initializer=self.initializer,
+                                                               regularizer=self.kernel_regularizer,
+                                                               trainable=self.trainable)
+
+        variable_array = variable_array.tolist()
+        variable_array = [tf.concat(var_list, axis=1) for var_list in variable_array]
+        tensor = tf.concat(variable_array, axis=0)
+
+        return tensor
