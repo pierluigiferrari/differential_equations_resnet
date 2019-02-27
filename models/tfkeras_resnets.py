@@ -26,7 +26,7 @@ from tensorflow.keras.regularizers import l2
 from layers.tfkeras_layer_Conv2DAntisymmetric import Conv2DAntisymmetric
 
 def single_layer_identity_block(input_tensor,
-                                num_filters,
+                                kernel_size,
                                 antisymmetric,
                                 use_batch_norm,
                                 stage,
@@ -41,7 +41,7 @@ def single_layer_identity_block(input_tensor,
 
     Arguments:
         input_tensor (4D tensor): The 4D input tensor of the shape (batch, heigh, width, channels).
-        num_filters (int): The number of filters to be used for the convolution kernel.
+        kernel_size (int): The size of the quadratic convolution kernel.
         antisymmetric (bool): If `True`, the convolution matrix for this block will be antisymmetric,
             which is equivalent to the convolution kernel being skew-centrosymmetric. If `False`,
             the block will contain a regular convolutional layer instead.
@@ -52,6 +52,8 @@ def single_layer_identity_block(input_tensor,
             convolutional feature map change.
         block (int): The number of the current block within the current stage. Used for
             the generation of the layer names.
+        kernel_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
+        bias_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
 
     Returns:
         The output tensor for the block.
@@ -61,13 +63,15 @@ def single_layer_identity_block(input_tensor,
     bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
     if antisymmetric:
-        x = Conv2DAntisymmetric(num_filters=num_filters,
-                                trainable=True,
+        x = Conv2DAntisymmetric(kernel_size=kernel_size,
+                                strides=(1, 1),
                                 use_bias=True,
+                                kernel_initializer='he_normal',
+                                kernel_regularizer=kernel_regularizer,
                                 name=conv_name_base + '2')(input_tensor)
     else:
-        x = Conv2D(filters=num_filters,
-                   kernel_size=(3,3),
+        x = Conv2D(filters=input_tensor.shape[-1],
+                   kernel_size=kernel_size,
                    padding='same',
                    kernel_initializer='he_normal',
                    kernel_regularizer=kernel_regularizer,
@@ -78,12 +82,13 @@ def single_layer_identity_block(input_tensor,
         x = BatchNormalization(axis=3,
                                name=bn_name_base + '2')(x)
 
-    x = add([x, input_tensor])
     x = Activation('relu')(x)
+    x = add([x, input_tensor])
 
     return x
 
 def bottleneck_identity_block(input_tensor,
+                              kernel_size,
                               num_filters,
                               antisymmetric,
                               use_batch_norm,
@@ -93,19 +98,25 @@ def bottleneck_identity_block(input_tensor,
                               bias_regularizer=None):
     '''
     Create a regular ResNet bottleneck identity block that consists of three consecutive convolutional
-    layers (1-by-1, 3-by-3, 1-by-1) as described in (https://arxiv.org/pdf/1512.03385.pdf).
+    layers (1-by-1, k-by-k, 1-by-1) as described in (https://arxiv.org/pdf/1512.03385.pdf).
     The identity block is used when the input tensor and the output tensor of the block have the
     same number of channels, in which case the main branch and the shortcut branch of the block can
     simply be added directly, because the output tensors of the two branches have the same dimensions.
 
     Arguments:
         input_tensor (4D tensor): The 4D input tensor of the shape (batch, heigh, width, channels).
+        kernel_size (int): The size of the quadratic convolution kernel.
         num_filters (tuple): A tuple of 3 integers which define the number of filters to be used
-            for the three convolutional layers.
-        antisymmetric (bool): If `True`, the convolution matrix of the 3-by-3 convolutional layer of
+            for the three convolutional layers. The second element of the tuple can also be `None`,
+            indicating that the number of filters of the block's second convolutional layer will be
+            identical to its number of input channels. This is required in order to yield an antisymmetric
+            convolution matrix for the second conv layer.
+        antisymmetric (bool): If `True`, the convolution matrix of the second convolutional layer of
             this block will be antisymmetric, which is equivalent to the convolution kernel being
             skew-centrosymmetric. If `False`, the block will contain a regular 3-by-3 convolutional
-            layer instead.
+            layer instead. Setting this argument to `True` only has an effect if the second element of
+            `num_filters` is set to `None`, because the convolution matrix can only be a square matrix
+            if the number of input channels to and output channels from the layer are identical.
         use_batch_norm (bool): If `True`, each convolutional layer of this block will be followed by
             a batch normalization layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
@@ -113,6 +124,8 @@ def bottleneck_identity_block(input_tensor,
             convolutional feature map change.
         block (int): The number of the current block within the current stage. Used for
             the generation of the layer names.
+        kernel_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
+        bias_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
 
     Returns:
         The output tensor for the block.
@@ -139,14 +152,16 @@ def bottleneck_identity_block(input_tensor,
     #                                3-by-3
     ############################################################################
 
-    if antisymmetric:
-        x = Conv2DAntisymmetric(num_filters=num_filters[1],
-                                trainable=True,
+    if antisymmetric and (num_filters[1] is None):
+        x = Conv2DAntisymmetric(kernel_size=kernel_size,
+                                strides=(1, 1),
                                 use_bias=True,
-                                name=conv_name_base + '2')(x)
+                                kernel_initializer='he_normal',
+                                kernel_regularizer=kernel_regularizer,
+                                name=conv_name_base + '2b')(x)
     else:
         x = Conv2D(filters=num_filters[1],
-                   kernel_size=(3,3),
+                   kernel_size=kernel_size,
                    padding='same',
                    kernel_initializer='he_normal',
                    kernel_regularizer=kernel_regularizer,
@@ -179,8 +194,9 @@ def bottleneck_identity_block(input_tensor,
     return x
 
 def single_layer_conv_block(input_tensor,
+                            kernel_size,
                             num_filters,
-                            antisymmetric,
+                            strides,
                             use_batch_norm,
                             stage,
                             block,
@@ -196,10 +212,8 @@ def single_layer_conv_block(input_tensor,
 
     Arguments:
         input_tensor (4D tensor): The 4D input tensor of the shape (batch, heigh, width, channels).
+        kernel_size (int): The size of the quadratic convolution kernel.
         num_filters (int): The number of filters to be used for the convolution kernel.
-        antisymmetric (bool): If `True`, the convolution matrix for this block will be antisymmetric,
-            which is equivalent to the convolution kernel being skew-centrosymmetric. If `False`,
-            the block will contain a regular convolutional layer instead.
         use_batch_norm (bool): If `True`, the convolution layer will be followed by a batch normalization
             layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
@@ -207,6 +221,8 @@ def single_layer_conv_block(input_tensor,
             convolutional feature map change.
         block (int): The number of the current block within the current stage. Used for
             the generation of the layer names.
+        kernel_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
+        bias_regularizer (tf.keras.regularizer, optional): An instance of `tf.keras.regularizer`.
 
     Returns:
         The output tensor for the block.
@@ -215,22 +231,18 @@ def single_layer_conv_block(input_tensor,
     conv_name_base = 'res' + str(stage) + '_' + str(block) + '_branch'
     bn_name_base = 'bn' + str(stage) + '_' + str(block) + '_branch'
 
-    if antisymmetric:
-        x = Conv2DAntisymmetric(num_filters=num_filters,
-                                trainable=True,
-                                use_bias=True,
-                                name=conv_name_base + '2')(input_tensor)
-    else:
-        x = Conv2D(filters=num_filters,
-                   kernel_size=(3,3),
-                   padding='same',
-                   kernel_initializer='he_normal',
-                   kernel_regularizer=kernel_regularizer,
-                   bias_regularizer=bias_regularizer,
-                   name=conv_name_base + '2')(input_tensor)
+    x = Conv2D(filters=num_filters,
+               kernel_size=kernel_size,
+               strides=strides,
+               padding='same',
+               kernel_initializer='he_normal',
+               kernel_regularizer=kernel_regularizer,
+               bias_regularizer=bias_regularizer,
+               name=conv_name_base + '2')(input_tensor)
 
     shortcut = Conv2D(filters=num_filters,
                       kernel_size=(1,1),
+                      strides=strides,
                       kernel_initializer='he_normal',
                       kernel_regularizer=kernel_regularizer,
                       bias_regularizer=bias_regularizer,
@@ -243,12 +255,13 @@ def single_layer_conv_block(input_tensor,
         shortcut = BatchNormalization(axis=3,
                                       name=bn_name_base + '1')(shortcut)
 
-    x = add([x, shortcut])
     x = Activation('relu')(x)
+    x = add([x, shortcut])
 
     return x
 
 def bottleneck_conv_block(input_tensor,
+                          kernel_size,
                           num_filters,
                           antisymmetric,
                           use_batch_norm,
@@ -260,7 +273,7 @@ def bottleneck_conv_block(input_tensor,
                           bias_regularizer=None):
     '''
     Create a regular ResNet bottleneck conv block that consists of three consecutive convolutional
-    layers (1-by-1, 3-by-3, 1-by-1) as described in (https://arxiv.org/pdf/1512.03385.pdf).
+    layers (1-by-1, k-by-k, 1-by-1) as described in (https://arxiv.org/pdf/1512.03385.pdf).
     The convolutional block is used when the input tensor and the output tensor of the block do not
     have the same number of channels, in which case the number of channels of the shortcut branch gets
     increased or reduced to the number of channels of the main branch by means of a 1-by-1 convolution,
@@ -269,12 +282,18 @@ def bottleneck_conv_block(input_tensor,
 
     Arguments:
         input_tensor (4D tensor): The 4D input tensor of the shape (batch, heigh, width, channels).
+        kernel_size (int): The size of the quadratic convolution kernel.
         num_filters (tuple): A tuple of 3 integers which define the number of filters to be used
-            for the three convolutional layers.
-        antisymmetric (bool): If `True`, the convolution matrix of the 3-by-3 convolutional layer of
+            for the three convolutional layers. The second element of the tuple can also be `None`,
+            indicating that the number of filters of the block's second convolutional layer will be
+            identical to its number of input channels. This is required in order to yield an antisymmetric
+            convolution matrix for the second conv layer.
+        antisymmetric (bool): If `True`, the convolution matrix of the second convolutional layer of
             this block will be antisymmetric, which is equivalent to the convolution kernel being
             skew-centrosymmetric. If `False`, the block will contain a regular 3-by-3 convolutional
-            layer instead.
+            layer instead. Setting this argument to `True` only has an effect if the second element of
+            `num_filters` is set to `None`, because the convolution matrix can only be a square matrix
+            if the number of input channels to and output channels from the layer are identical.
         use_batch_norm (bool): If `True`, each convolutional layer of this block will be followed by
             a batch normalization layer.
         stage (int): The number of the current stage. Used for the generation of the layer names.
@@ -308,10 +327,10 @@ def bottleneck_conv_block(input_tensor,
 
     if version == 1:
         strides_1_by_1 = strides
-        strides_3_by_3 = (1,1)
+        strides_k_by_k = (1,1)
     elif version == 1.5:
         strides_1_by_1 = (1,1)
-        strides_3_by_3 = strides
+        strides_k_by_k = strides
     else:
         raise ValueError("Supported values for `version` are 1 and 1.5.")
 
@@ -338,16 +357,17 @@ def bottleneck_conv_block(input_tensor,
     #                                3-by-3
     ############################################################################
 
-    if antisymmetric:
-        x = Conv2DAntisymmetric(num_filters=num_filters[1],
-                                trainable=True,
+    if antisymmetric and (num_filters[1] is None):
+        x = Conv2DAntisymmetric(kernel_size=kernel_size,
+                                strides=strides_k_by_k,
                                 use_bias=True,
-                                strides=strides_3_by_3,
-                                name=conv_name_base + '2')(x)
+                                kernel_initializer='he_normal',
+                                kernel_regularizer=kernel_regularizer,
+                                name=conv_name_base + '2b')(x)
     else:
         x = Conv2D(filters=num_filters[1],
-                   kernel_size=(3,3),
-                   strides=strides_3_by_3,
+                   kernel_size=kernel_size,
+                   strides=strides_k_by_k,
                    padding='same',
                    kernel_initializer='he_normal',
                    kernel_regularizer=kernel_regularizer,
@@ -394,12 +414,14 @@ def bottleneck_conv_block(input_tensor,
 
     return x
 
-def build_single_block_resnet(image_size,
+def build_single_block_resnet(image_shape,
                               kernel_type='antisymmetric',
+                              kernel_size=3,
                               blocks_per_stage=[3, 4, 6, 3],
                               filters_per_block=[64, 128, 256, 512],
+                              strides=(2,2),
                               include_top=True,
-                              fc_activation=None,
+                              fc_activation='softmax',
                               num_classes=None,
                               use_batch_norm=False,
                               use_max_pooling=[False, False, False, False],
@@ -411,7 +433,7 @@ def build_single_block_resnet(image_size,
     of five stages of ResNet blocks. Each stage consists of one or more identical blocks.
 
     Arguments:
-        image_size (tuple): A tuple `(height, width, channels)` of three integers representing the size
+        image_shape (tuple): A tuple `(height, width, channels)` of three integers representing the size
             and number of channels of the image input.
         kernel_type (str, optional): If 'antisymmetric', will build a ResNet in which
             all 3-by-3 convolution kernels are anti-centrosymmetric.
@@ -446,7 +468,7 @@ def build_single_block_resnet(image_size,
     if include_top and (num_classes is None):
         raise ValueError("You must pass a positive integer for `num_classes` if `include_top` is `True`.")
 
-    img_height, img_width, img_channels = image_size[0], image_size[1], image_size[2]
+    img_height, img_width, img_channels = image_shape
 
     name = 'single_block_resnet'
 
@@ -484,20 +506,13 @@ def build_single_block_resnet(image_size,
         x1 = Lambda(input_stddev_normalization, output_shape=(img_height, img_width, img_channels), name='input_stddev_normalization')(x1)
 
     # Stage 1
-    if antisymmetric:
-        x = Conv2DAntisymmetric(num_filters=64,
-                                trainable=True,
-                                use_bias=True,
-                                strides=(2,2),
-                                name='conv1')(x1)
-    else:
-        x = Conv2D(filters=64,
-                   kernel_size=(3,3),
-                   strides=(2,2),
-                   padding='same',
-                   kernel_initializer='he_normal',
-                   kernel_regularizer=l2(l2_regularization),
-                   name='conv1')(x1)
+    x = Conv2D(filters=64,
+               kernel_size=kernel_size,
+               strides=strides,
+               padding='same',
+               kernel_initializer='he_normal',
+               kernel_regularizer=l2(l2_regularization),
+               name='conv1')(x1)
     if use_batch_norm:
         x = BatchNormalization(axis=3, name='bn_conv1')(x)
     x = Activation('relu')(x)
@@ -506,30 +521,30 @@ def build_single_block_resnet(image_size,
         x = MaxPooling2D(pool_size=(3,3), strides=(2,2), name='stage1_pooling')(x)
 
     # Stage 2
-    x = single_layer_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, kernel_regularizer=l2(l2_regularization))
+    x = single_layer_conv_block(x, kernel_size, filters_per_block[0], strides, use_batch_norm, stage=2, block=0, kernel_regularizer=l2(l2_regularization))
     for i in range(1, blocks_per_stage[0]):
-        x = single_layer_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
+        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
     if use_max_pooling[1]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage2_pooling')(x)
 
     # Stage 3
-    x = single_layer_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, kernel_regularizer=l2(l2_regularization))
+    x = single_layer_conv_block(x, kernel_size, filters_per_block[1], strides, use_batch_norm, stage=3, block=0, kernel_regularizer=l2(l2_regularization))
     for i in range(1, blocks_per_stage[1]):
-        x = single_layer_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
+        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
     if use_max_pooling[2]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage3_pooling')(x)
 
     # Stage 4
-    x = single_layer_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, kernel_regularizer=l2(l2_regularization))
+    x = single_layer_conv_block(x, kernel_size, filters_per_block[2], strides, use_batch_norm, stage=4, block=0, kernel_regularizer=l2(l2_regularization))
     for i in range(1, blocks_per_stage[2]):
-        x = single_layer_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
+        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
     if use_max_pooling[3]:
         x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage4_pooling')(x)
 
     # Stage 5
-    x = single_layer_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, kernel_regularizer=l2(l2_regularization))
+    x = single_layer_conv_block(x, kernel_size, filters_per_block[3], strides, use_batch_norm, stage=5, block=0, kernel_regularizer=l2(l2_regularization))
     for i in range(1, blocks_per_stage[3]):
-        x = single_layer_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
+        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
@@ -543,7 +558,7 @@ def build_single_block_resnet(image_size,
 def build_resnet(image_shape,
                  kernel_type='antisymmetric',
                  include_top=True,
-                 fc_activation=None,
+                 fc_activation='softmax',
                  num_classes=None,
                  l2_regularization=0.0,
                  subtract_mean=None,
@@ -634,7 +649,7 @@ def build_resnet(image_shape,
 
 def get_resnet_build_function(kernel_type='antisymmetric',
                               include_top=True,
-                              fc_activation=None,
+                              fc_activation='softmax',
                               num_classes=None,
                               l2_regularization=0.0,
                               subtract_mean=None,
@@ -724,24 +739,24 @@ def get_resnet_build_function(kernel_type='antisymmetric',
         x = MaxPooling2D(pool_size=(3, 3), strides=(2, 2), name='stage1_pooling')(x)
 
         # Stage 2
-        x = bottleneck_conv_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, version=version, strides=(1,1), kernel_regularizer=l2(l2_regularization))
+        x = bottleneck_conv_block(x, 3, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=0, version=version, strides=(1,1), kernel_regularizer=l2(l2_regularization))
         for i in range(1, blocks_per_stage[0]):
-            x = bottleneck_identity_block(x, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
+            x = bottleneck_identity_block(x, 3, filters_per_block[0], antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
 
         # Stage 3
-        x = bottleneck_conv_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        x = bottleneck_conv_block(x, 3, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
         for i in range(1, blocks_per_stage[1]):
-            x = bottleneck_identity_block(x, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
+            x = bottleneck_identity_block(x, 3, filters_per_block[1], antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
 
         # Stage 4
-        x = bottleneck_conv_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        x = bottleneck_conv_block(x, 3, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
         for i in range(1, blocks_per_stage[2]):
-            x = bottleneck_identity_block(x, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
+            x = bottleneck_identity_block(x, 3, filters_per_block[2], antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
 
         # Stage 5
-        x = bottleneck_conv_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
+        x = bottleneck_conv_block(x, 3, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=0, version=version, strides=(2,2), kernel_regularizer=l2(l2_regularization))
         for i in range(1, blocks_per_stage[3]):
-            x = bottleneck_identity_block(x, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
+            x = bottleneck_identity_block(x, 3, filters_per_block[3], antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
 
         if include_top:
             x = GlobalAveragePooling2D(name='global_average_pooling')(x)
