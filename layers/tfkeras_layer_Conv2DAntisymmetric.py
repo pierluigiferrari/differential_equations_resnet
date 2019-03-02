@@ -156,89 +156,6 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
         super(Conv2DAntisymmetric, self).build(input_shape)
 
-    '''def build(self, input_shape):
-
-        kernel_height = 3
-        kernel_width  = 3
-        dtype=tf.float32
-        in_channels = int(input_shape[-1])
-
-        self.a = self.add_weight(name='a',
-                                 shape=[1,1,in_channels,self.num_filters],
-                                 dtype=dtype,
-                                 initializer=tf.initializers.truncated_normal(mean=0.0,
-                                                                              stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
-                                                                              dtype=dtype),
-                                 regularizer=None,
-                                 trainable=self.trainable)
-
-        self.b = self.add_weight(name='b',
-                                 shape=[1,1,in_channels,self.num_filters],
-                                 dtype=dtype,
-                                 initializer=tf.initializers.truncated_normal(mean=0.0,
-                                                                              stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
-                                                                              dtype=dtype),
-                                 regularizer=None,
-                                 trainable=self.trainable)
-
-        self.c = self.add_weight(name='c',
-                                 shape=[1,1,in_channels,self.num_filters],
-                                 dtype=dtype,
-                                 initializer=tf.initializers.truncated_normal(mean=0.0,
-                                                                              stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
-                                                                              dtype=dtype),
-                                 regularizer=None,
-                                 trainable=self.trainable)
-
-        self.d = self.add_weight(name='d',
-                                 shape=[1,1,in_channels,self.num_filters],
-                                 dtype=dtype,
-                                 initializer=tf.initializers.truncated_normal(mean=0.0,
-                                                                              stddev=tf.sqrt(2/(kernel_height * kernel_width * in_channels)),
-                                                                              dtype=dtype),
-                                 regularizer=None,
-                                 trainable=self.trainable)
-
-        # 'e' constitutes the center element of the kernel, which must be zero and non-trainable.
-        self.e = self.add_weight(name='e',
-                                 shape=[1,1,in_channels,self.num_filters],
-                                 dtype=dtype,
-                                 initializer=tf.initializers.zeros(dtype=dtype),
-                                 regularizer=None,
-                                 trainable=False)
-
-        # The remaining elements of the kernel are just the additive inverses of the previous elements.
-        self.f = -self.d
-        self.g = -self.c
-        self.h = -self.b
-        self.i = -self.a
-
-        # Put the nine individual spatial kernel elements together into one 3x3 kernel.
-        kernel_row1 = tf.concat(values=[self.a,self.b,self.c],
-                                axis=1,
-                                name='kernel_row1')
-        kernel_row2 = tf.concat(values=[self.d,self.e,self.f],
-                                axis=1,
-                                name='kernel_row2')
-        kernel_row3 = tf.concat(values=[self.g,self.h,self.i],
-                                axis=1,
-                                name='kernel_row3')
-        self.kernel = tf.concat(values=[kernel_row1,
-                                        kernel_row2,
-                                        kernel_row3],
-                                axis=0,
-                                name='skew_centrosymmetric_kernel')
-
-        if self.use_bias:
-            self.bias = self.add_weight(name='bias',
-                                        shape=[self.num_filters,],
-                                        dtype=dtype,
-                                        initializer=tf.initializers.zeros(dtype=dtype),
-                                        regularizer=None,
-                                        trainable=self.trainable)
-
-        super(Conv2DAntisymmetric, self).build(input_shape)'''
-
     def call(self, input_tensor):
 
         output_tensor = tf.nn.conv2d(input_tensor,
@@ -260,11 +177,6 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
         return input_shape
 
     def get_config(self):
-        kernel_size,
-        strides=(1, 1),
-        use_bias=True,
-        kernel_initializer='he_normal',
-        kernel_regularizer=None,
 
         config = {
             'kernel_size': self.kernel_size,
