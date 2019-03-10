@@ -31,6 +31,7 @@ def single_layer_identity_block(input_tensor,
                                 use_batch_norm,
                                 stage,
                                 block,
+                                h=1.0,
                                 kernel_regularizer=None,
                                 bias_regularizer=None):
     '''
@@ -82,6 +83,8 @@ def single_layer_identity_block(input_tensor,
                                name=bn_name_base + '2')(x)
 
     x = Activation('relu')(x)
+    if h != 1.0:
+        x = Lambda(lambda x: h * x, name='scale' + str(stage) + '_' + str(block))(x)
     x = add([x, input_tensor])
 
     return x
@@ -414,10 +417,11 @@ def bottleneck_conv_block(input_tensor,
 def build_single_block_resnet(image_shape,
                               kernel_type='antisymmetric',
                               kernel_size=3,
+                              h=1.0,
                               num_stages=5,
                               blocks_per_stage=[3, 4, 6, 3],
                               filters_per_block=[64, 128, 256, 512],
-                              strides=(2,2),
+                              strides=[(2,2),(2,2),(2,2),(2,2)],
                               include_top=True,
                               fc_activation='softmax',
                               num_classes=None,
@@ -506,9 +510,10 @@ def build_single_block_resnet(image_shape,
         x1 = Lambda(input_stddev_normalization, output_shape=(img_height, img_width, img_channels), name='input_stddev_normalization')(x1)
 
     # Stage 1
-    x = Conv2D(filters=64,
+    print("Building stage 1")
+    x = Conv2D(filters=filters_per_block[0],
                kernel_size=kernel_size,
-               strides=strides,
+               strides=strides[0],
                padding='same',
                kernel_initializer='he_normal',
                kernel_regularizer=l2(l2_regularization),
@@ -516,37 +521,27 @@ def build_single_block_resnet(image_shape,
     if use_batch_norm:
         x = BatchNormalization(axis=3, name='bn_conv1')(x)
     x = Activation('relu')(x)
-    if use_max_pooling[0]:
-        x = ZeroPadding2D(padding=(1,1), name='pool1_pad')(x)
-        x = MaxPooling2D(pool_size=(3,3), strides=(2,2), name='stage1_pooling')(x)
 
-    # Stage 2
-    x = single_layer_conv_block(x, kernel_size, filters_per_block[0], strides, use_batch_norm, stage=2, block=0, kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[0]):
-        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=2, block=i, kernel_regularizer=l2(l2_regularization))
-    if use_max_pooling[1]:
-        x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage2_pooling')(x)
-
-    # Stage 3
-    x = single_layer_conv_block(x, kernel_size, filters_per_block[1], strides, use_batch_norm, stage=3, block=0, kernel_regularizer=l2(l2_regularization))
-    for i in range(1, blocks_per_stage[1]):
-        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=3, block=i, kernel_regularizer=l2(l2_regularization))
-    if use_max_pooling[2]:
-        x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage3_pooling')(x)
-
-    if num_stages >= 4:
-        # Stage 4
-        x = single_layer_conv_block(x, kernel_size, filters_per_block[2], strides, use_batch_norm, stage=4, block=0, kernel_regularizer=l2(l2_regularization))
-        for i in range(1, blocks_per_stage[2]):
-            x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=4, block=i, kernel_regularizer=l2(l2_regularization))
-        if use_max_pooling[3]:
-            x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage4_pooling')(x)
-
-    if num_stages >= 5:
-        # Stage 5
-        x = single_layer_conv_block(x, kernel_size, filters_per_block[3], strides, use_batch_norm, stage=5, block=0, kernel_regularizer=l2(l2_regularization))
-        for i in range(1, blocks_per_stage[3]):
-            x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=5, block=i, kernel_regularizer=l2(l2_regularization))
+    # Stage 2 to num_stages.
+    for s in range(num_stages-1):
+        # This is stage s+2.
+        if use_max_pooling[s]:
+            x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage{}_pooling'.format(s+2))(x)
+        if (s == 0) and not use_max_pooling[s]: # In the second stage we only need identity blocks because the number of filters remains constant.
+            for b in range(0, blocks_per_stage[s]):
+                print("Building identity block {}-{}".format(s+2, b+1))
+                x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
+        else:
+            if not use_max_pooling[s] and (filters_per_block[s] == filters_per_block[s-1]) and (strides[s] == (1,1)): # Output shape does not change.
+                for b in range(0, blocks_per_stage[s]):
+                    print("Building identity block {}-{}".format(s+2, b+1))
+                    x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
+            else:
+                print("Building conv block {}-{}".format(s+2, 1))
+                x = single_layer_conv_block(x, kernel_size, filters_per_block[s], strides[s], use_batch_norm, stage=s+2, block=0, kernel_regularizer=l2(l2_regularization))
+                for b in range(1, blocks_per_stage[s]):
+                    print("Building identity block {}-{}".format(s+2, b))
+                    x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
 
     if include_top:
         x = GlobalAveragePooling2D(name='global_average_pooling')(x)
