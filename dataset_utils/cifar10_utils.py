@@ -32,11 +32,11 @@ def build_cifar10_dataset(cifar10_directory):
 
     Returns:
         Five objects, in this order:
-        - A Numpy array containing all 50,000 training images
-        - A Numpy array containing all 50,000 labels for the training images
-        - A Numpy array containing all 10,000 test images
-        - A Numpy array containing all 10,000 labels for the test images
-        - A list containing the names of the ten classes
+        1. A Numpy array of shape (50000,32,32,3) containing all 50,000 training images
+        2. A Numpy array of shape (50000,) containing all 50,000 labels for the training images
+        3. A Numpy array of shape (10000,32,32,3) containing all 10,000 test images
+        4. A Numpy array of shape (10000,) containing all 10,000 labels for the test images
+        5. A list containing the names of the ten classes
     '''
 
     train_pickle_filenames = ['data_batch_1',
