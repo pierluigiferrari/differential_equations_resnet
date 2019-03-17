@@ -1,5 +1,5 @@
 '''
-A class to a tf.data.Dataset from TFRecords.
+A class to create a tf.data.Dataset from TFRecords.
 
 Copyright (C) 2019 Pierluigi Ferrari
 
