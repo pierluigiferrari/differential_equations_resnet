@@ -24,7 +24,7 @@ class UnpackImagesLabels:
     Map the elements of a dataset from their original format to a tuple of an image
     and a label tensor.
 
-    Assumes the elements of the input dataset are dictionaries posses the keys
+    Assumes the elements of the input dataset are dictionaries that possess the keys
     'image' and 'label'.
     '''
 
