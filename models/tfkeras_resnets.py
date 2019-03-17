@@ -429,7 +429,8 @@ def build_single_block_resnet(image_shape,
                               use_max_pooling=[False, False, False, False],
                               l2_regularization=0.0,
                               subtract_mean=None,
-                              divide_by_stddev=None):
+                              divide_by_stddev=None,
+                              verbose=False):
     '''
     Build a ResNet with in which each ResNet block has only one convolutional layer. The overall ResNet is composed
     of five stages of ResNet blocks. Each stage consists of one or more identical blocks.
@@ -440,6 +441,8 @@ def build_single_block_resnet(image_shape,
         kernel_type (str, optional): If 'antisymmetric', will build a ResNet in which
             all 3-by-3 convolution kernels are anti-centrosymmetric.
         kernel_size (int, optional):
+        h (float, optional): The scaling factor for the output of the residual connections. This scaling factor
+            is 1.0 for the original ResNet architectures.
         num_stages (int, optional):
         blocks_per_stage (tuple, optional): A tuple of four positive integers representing the number of
             ResNet blocks for the stages 2, 3, 4, and 5 of the ResNet.
@@ -467,12 +470,49 @@ def build_single_block_resnet(image_shape,
             floating point values of any shape that is broadcast-compatible with the image shape. The image pixel
             intensity values will be divided by the elements of this array. For example, pass a list
             of three integers to perform per-channel standard deviation normalization for color images.
+        verbose (bool, optional):
     '''
+
+    build_function = get_single_block_resnet_build_function(kernel_type=kernel_type,
+                                                            kernel_size=kernel_size,
+                                                            h=h,
+                                                            num_stages=num_stages,
+                                                            blocks_per_stage=blocks_per_stage,
+                                                            filters_per_block=filters_per_block,
+                                                            strides=strides,
+                                                            include_top=include_top,
+                                                            fc_activation=fc_activation,
+                                                            num_classes=num_classes,
+                                                            use_batch_norm=use_batch_norm,
+                                                            use_max_pooling=use_max_pooling,
+                                                            l2_regularization=l2_regularization,
+                                                            subtract_mean=subtract_mean,
+                                                            divide_by_stddev=divide_by_stddev,
+                                                            verbose=verbose)
+
+    input_tensor = tf.keras.layers.Input(shape=image_shape)
+
+    return build_function(input_tensor)
+
+def get_single_block_resnet_build_function(kernel_type='antisymmetric',
+                                           kernel_size=3,
+                                           h=1.0,
+                                           num_stages=5,
+                                           blocks_per_stage=[3, 4, 6, 3],
+                                           filters_per_block=[64, 128, 256, 512],
+                                           strides=[(2,2),(2,2),(2,2),(2,2)],
+                                           include_top=True,
+                                           fc_activation='softmax',
+                                           num_classes=None,
+                                           use_batch_norm=False,
+                                           use_max_pooling=[False, False, False, False],
+                                           l2_regularization=0.0,
+                                           subtract_mean=None,
+                                           divide_by_stddev=None,
+                                           verbose=False):
 
     if include_top and (num_classes is None):
         raise ValueError("You must pass a positive integer for `num_classes` if `include_top` is `True`.")
-
-    img_height, img_width, img_channels = image_shape
 
     name = 'single_block_resnet'
 
@@ -483,74 +523,70 @@ def build_single_block_resnet(image_shape,
         antisymmetric = False
         name += '_regular'
 
-    ############################################################################
-    # Define functions for the Lambda layers below.
-    ############################################################################
-
-    def identity_layer(tensor):
-        return tensor
-
-    def input_mean_shift(tensor):
-        return tensor - np.array(subtract_mean)
-
-    def input_stddev_normalization(tensor):
-        return tensor / np.array(divide_by_stddev)
-
-    ############################################################################
-    # Build the network.
-    ############################################################################
-
-    input_tensor = Input(shape=(img_height, img_width, img_channels))
-
-    # The following identity layer is only needed so that the subsequent lambda layers can be optional.
-    x1 = Lambda(identity_layer, output_shape=(img_height, img_width, img_channels), name='identity_layer')(input_tensor)
     if not (subtract_mean is None):
-        x1 = Lambda(input_mean_shift, output_shape=(img_height, img_width, img_channels), name='input_mean_normalization')(x1)
+        subtract_mean = np.array(subtract_mean)
+
     if not (divide_by_stddev is None):
-        x1 = Lambda(input_stddev_normalization, output_shape=(img_height, img_width, img_channels), name='input_stddev_normalization')(x1)
+        divide_by_stddev = np.array(divide_by_stddev)
 
-    # Stage 1
-    print("Building stage 1")
-    x = Conv2D(filters=filters_per_block[0],
-               kernel_size=kernel_size,
-               strides=strides[0],
-               padding='same',
-               kernel_initializer='he_normal',
-               kernel_regularizer=l2(l2_regularization),
-               name='conv1')(x1)
-    if use_batch_norm:
-        x = BatchNormalization(axis=3, name='bn_conv1')(x)
-    x = Activation('relu')(x)
+    def _build_function(input_tensor):
+        '''
+        Build the network given an input tensor.
+        '''
 
-    # Stage 2 to num_stages.
-    for s in range(num_stages-1):
-        # This is stage s+2.
-        if use_max_pooling[s]:
-            x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage{}_pooling'.format(s+2))(x)
-        if (s == 0) and not use_max_pooling[s]: # In the second stage we only need identity blocks because the number of filters remains constant.
-            for b in range(0, blocks_per_stage[s]):
-                print("Building identity block {}-{}".format(s+2, b+1))
-                x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
-        else:
-            if not use_max_pooling[s] and (filters_per_block[s] == filters_per_block[s-1]) and (strides[s] == (1,1)): # Output shape does not change.
+        input_shape = list(input_tensor.shape)
+
+        # The following identity layer is only needed so that the subsequent lambda layers can be optional.
+        x1 = Lambda(lambda x: x, output_shape=input_shape, name='identity_layer')(input_tensor)
+        if not (subtract_mean is None):
+            x1 = Lambda(lambda x: x - subtract_mean, output_shape=input_shape, name='input_mean_shift')(x1)
+        if not (divide_by_stddev is None):
+            x1 = Lambda(lambda x: x / divide_by_stddev, output_shape=input_shape, name='input_scaling')(x1)
+
+        # Stage 1
+        if verbose: print("Building stage 1")
+        x = Conv2D(filters=filters_per_block[0],
+                   kernel_size=kernel_size,
+                   strides=strides[0],
+                   padding='same',
+                   kernel_initializer='he_normal',
+                   kernel_regularizer=l2(l2_regularization),
+                   name='conv1')(x1)
+        if use_batch_norm:
+            x = BatchNormalization(axis=3, name='bn_conv1')(x)
+        x = Activation('relu')(x)
+
+        # Stage 2 to num_stages.
+        for s in range(num_stages-1):
+            # This is stage s+2.
+            if use_max_pooling[s]:
+                x = MaxPooling2D(pool_size=(2, 2), strides=None, name='stage{}_pooling'.format(s+2))(x)
+            if (s == 0) and not use_max_pooling[s]: # In the second stage we only need identity blocks because the number of filters remains constant.
                 for b in range(0, blocks_per_stage[s]):
-                    print("Building identity block {}-{}".format(s+2, b+1))
+                    if verbose: print("Building identity block {}-{}".format(s+2, b+1))
                     x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
             else:
-                print("Building conv block {}-{}".format(s+2, 1))
-                x = single_layer_conv_block(x, kernel_size, filters_per_block[s], strides[s], use_batch_norm, stage=s+2, block=0, kernel_regularizer=l2(l2_regularization))
-                for b in range(1, blocks_per_stage[s]):
-                    print("Building identity block {}-{}".format(s+2, b))
-                    x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
+                if not use_max_pooling[s] and (filters_per_block[s] == filters_per_block[s-1]) and (strides[s] == (1,1)): # Output shape does not change.
+                    for b in range(0, blocks_per_stage[s]):
+                        if verbose: print("Building identity block {}-{}".format(s+2, b+1))
+                        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
+                else:
+                    if verbose: print("Building conv block {}-{}".format(s+2, 1))
+                    x = single_layer_conv_block(x, kernel_size, filters_per_block[s], strides[s], use_batch_norm, stage=s+2, block=0, kernel_regularizer=l2(l2_regularization))
+                    for b in range(1, blocks_per_stage[s]):
+                        if verbose: print("Building identity block {}-{}".format(s+2, b))
+                        x = single_layer_identity_block(x, kernel_size, antisymmetric, use_batch_norm, stage=s+2, block=b, h=h, kernel_regularizer=l2(l2_regularization))
 
-    if include_top:
-        x = GlobalAveragePooling2D(name='global_average_pooling')(x)
-        x = Dense(num_classes, activation=fc_activation, kernel_initializer='he_normal', kernel_regularizer=l2(l2_regularization), name='fc')(x)
+        if include_top:
+            x = GlobalAveragePooling2D(name='global_average_pooling')(x)
+            x = Dense(num_classes, activation=fc_activation, kernel_initializer='he_normal', kernel_regularizer=l2(l2_regularization), name='fc')(x)
 
-    # Create the model.
-    model = tf.keras.models.Model(input_tensor, x, name=name)
+        # Create the model.
+        model = tf.keras.models.Model(input_tensor, x, name=name)
 
-    return model
+        return model
+
+    return _build_function
 
 def build_resnet(image_shape,
                  kernel_type='antisymmetric',
