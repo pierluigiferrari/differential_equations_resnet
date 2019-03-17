@@ -35,9 +35,22 @@ class Training:
 
     def __init__(self,
                  model_build_function,
+                 kernel_type,
                  optimizer,
+                 learning_rate_placeholder,
                  train_dataset,
                  val_dataset=None,
+                 dataset_type='tfrecords',
+                 train_features_placeholder=None,
+                 train_labels_placeholder=None,
+                 val_features_placeholder=None,
+                 val_labels_placeholder=None,
+                 train_features=None,
+                 train_labels=None,
+                 val_features=None,
+                 val_labels=None,
+                 global_step=0,
+                 num_layers=None,
                  record_summaries=True,
                  summaries=['mean_gradient_norms'],
                  summaries_dir=None,
@@ -54,6 +67,7 @@ class Training:
                 iterator for the dataset will be created internally. It is recommended to set the dataset to infinite
                 repetition.
             val_dataset (tf.data.Dataset object, optional): A tf.data.Dataset object, the validation dataset.
+            dataset_type (str, optional):
             record_summaries (bool, optional): Whether or not to record TensorBoard summaries.
             summaries (list, optional): TODO.
             summaries_dir (str, optional): The full path of the directory to which to
@@ -66,8 +80,8 @@ class Training:
         assert LooseVersion(tf.__version__) >= LooseVersion('1.0'), 'This program requires TensorFlow version 1.0 or newer. You are using {}'.format(tf.__version__)
         print('TensorFlow Version: {}'.format(tf.__version__))
 
-        if not isinstance(optimizer, tf.train.Optimizer):
-            raise ValueError("The model you passed is not an instance of tf.train.Optimizer or a subclass thereof.")
+        #if not isinstance(optimizer, tf.train.Optimizer):
+        #    raise ValueError("The model you passed is not an instance of tf.train.Optimizer or a subclass thereof.")
 
         if not isinstance(train_dataset, tf.data.Dataset):
             raise ValueError("train_dataset must be a tf.data.Dataset object.")
@@ -75,11 +89,25 @@ class Training:
         if (not (val_dataset is None)) and (not isinstance(val_dataset, tf.data.Dataset)):
             raise ValueError("val_dataset must be a tf.data.Dataset object.")
 
+        if not dataset_type in ('tfrecords', 'arrays'):
+            raise ValueError("Supported values for argument `dataset_types` are 'tfrecords' (for TFRecordDatasets) and 'arrays' (for datasets created from NumPy arrays).")
+
         self.model_build_function = model_build_function
         self.optimizer = optimizer
+        self.learning_rate_placeholder = learning_rate_placeholder
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
+        self.dataset_type = dataset_type
+        self.train_features_placeholder = train_features_placeholder
+        self.train_labels_placeholder = train_labels_placeholder
+        self.val_features_placeholder = val_features_placeholder
+        self.val_labels_placeholder = val_labels_placeholder
+        self.train_features = train_features
+        self.train_labels = train_labels
+        self.val_features = val_features
+        self.val_labels = val_labels
         self.record_summaries = record_summaries
+        self.num_layers = num_layers # TODO: This is an ugly hack for the computation of the gradient norms for antisymmetric resnets.
         self.summaries = summaries
         self.summaries_dir = summaries_dir
         self.summaries_name = summaries_name
@@ -103,7 +131,7 @@ class Training:
 
         self.sess = tf.Session()
         tf.keras.backend.set_session(self.sess)
-        self.g_step = None # The global step
+        self.g_step = global_step # The global step
 
         ########################################################################
         # Build the graph.
@@ -125,7 +153,6 @@ class Training:
         (self.total_loss,
          self.grads_and_vars,
          self.train_step,
-         self.learning_rate,
          self.global_step) = self._build_optimizer()
         # Add the prediction outputs.
         self.predictions_argmax = self._build_predictor()
@@ -136,7 +163,10 @@ class Training:
          self.acc_update_op,
          self.metrics_reset_op) = self._build_metrics()
         # Add gradient metrics.
-        self.gradient_mean_norms = self._build_gradient_metrics()
+        if kernel_type == 'antisymmetric':
+            self.gradient_mean_norms = self._build_gradient_metrics_antisymmetric()
+        else:
+            self.gradient_mean_norms = self._build_gradient_metrics()
         self.gradient_mean_norm_names = [tensor.name.split(':')[0].split('metrics/')[1] for tensor in self.gradient_mean_norms]
         # Add summary ops for TensorBoard.
         (self.training_summaries,
@@ -159,33 +189,46 @@ class Training:
         # Set up the summary file writers.
         if self.record_summaries:
             self.training_writer = tf.summary.FileWriter(logdir=os.path.join(self.summaries_dir, self.summaries_name),
-                                                    graph=self.sess.graph)
-            self.evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(self.summaries_dir, self.summaries_name + '_eval'))
+                                                         graph=self.sess.graph)
+            self.evaluation_writer = tf.summary.FileWriter(logdir=os.path.join(self.summaries_dir, self.summaries_name))
 
             # Create the directory for the CSV file if it doesn't already exist.
             pathlib.Path(self.csv_logger_dir).mkdir(parents=True, exist_ok=True)
             # Open existing CSV file or create a new one. The stream is positioned at the end of the file and anything
             # written to the file will always be written at the end of the file, regardless of intermediate 'seek()'
             # calls.
-            self.csv_file = open(os.path.join(self.csv_logger_dir,'{}.csv'.format(self.csv_logger_name)), 'a+', newline='')
+            self.csv_file_train = open(os.path.join(self.csv_logger_dir, '{}_{}.csv'.format(self.summaries_name, self.csv_logger_name)), 'a+', newline='')
             # Check whether this file is new (and thus empty) or whether it already has content in it.
-            self.csv_file.seek(0)
-            is_empty = self.csv_file.readline() == ''
+            self.csv_file_train.seek(0)
+            is_empty = self.csv_file_train.readline() == ''
             # Create a CSV writer object.
-            self.csv_writer = csv.writer(self.csv_file, delimiter=' ')
+            self.csv_writer_train = csv.writer(self.csv_file_train, delimiter=' ')
             # Write a header row to the file only if it is empty.
             if is_empty:
-                self.csv_writer.writerow(['global_step'] + self.gradient_mean_norm_names)
+                self.csv_writer_train.writerow(['global_step'] + self.metric_names + self.gradient_mean_norm_names)
+                self.csv_file_train.flush()
+            # Same thing as above for the evaluation metrics.
+            self.csv_file_val = open(os.path.join(self.csv_logger_dir, '{}_evaluation_metrics.csv'.format(self.summaries_name)), 'a+', newline='')
+            # Check whether this file is new (and thus empty) or whether it already has content in it.
+            self.csv_file_val.seek(0)
+            is_empty = self.csv_file_val.readline() == ''
+            # Create a CSV writer object.
+            self.csv_writer_val = csv.writer(self.csv_file_val, delimiter=' ')
+            # Write a header row to the file only if it is empty.
+            if is_empty:
+                self.csv_writer_val.writerow(['global_step'] + self.metric_names)
+                self.csv_file_val.flush()
+
 
         # Define the fetches and feed dict.
-        self.fetches_summaries = {'global_step': self.global_step,
+        self.fetches_summaries = {'global_step': self.global_step, #TODO self.optimizer.iterations,
                                   'training_step': self.train_step,
                                   'metric_updates': self.metric_update_ops,
                                   'metric_values': self.metric_value_tensors,
                                   'gradient_mean_norms': self.gradient_mean_norms,
                                   'training_summaries': self.training_summaries,
                                   'layer_updates': self.model.updates}
-        self.fetches_no_summaries = {'global_step': self.global_step,
+        self.fetches_no_summaries = {'global_step': self.global_step, #TODO self.optimizer.iterations,
                                      'training_step': self.train_step,
                                      'metric_updates': self.metric_update_ops,
                                      'metric_values': self.metric_value_tensors,
@@ -197,13 +240,29 @@ class Training:
         '''
         with tf.name_scope('data_input'):
 
-            train_iterator = self.train_dataset.make_one_shot_iterator()
+            if self.dataset_type == 'tfrecords':
+                train_iterator = self.train_dataset.make_one_shot_iterator()
+            else:
+                train_iterator = self.train_dataset.make_initializable_iterator()
+                self.sess.run(train_iterator.initializer, feed_dict={self.train_features_placeholder: self.train_features,
+                                                                     self.train_labels_placeholder: self.train_labels})
+
             train_iterator_handle = self.sess.run(train_iterator.string_handle())
 
             if not (self.val_dataset is None):
-                val_iterator = self.val_dataset.make_one_shot_iterator()
+                if self.dataset_type == 'tfrecords':
+                    val_iterator = self.val_dataset.make_one_shot_iterator()
+                else:
+                    val_iterator = self.val_dataset.make_initializable_iterator()
+                    self.sess.run(val_iterator.initializer, feed_dict={self.val_features_placeholder: self.val_features,
+                                                                       self.val_labels_placeholder: self.val_labels})
             else:
-                val_iterator = self.train_dataset.make_one_shot_iterator()
+                if self.dataset_type == 'tfrecords':
+                    val_iterator = self.train_dataset.make_one_shot_iterator()
+                else:
+                    val_iterator = self.train_dataset.make_initializable_iterator()
+                    self.sess.run(val_iterator.initializer, feed_dict={self.val_features_placeholder: self.train_features,
+                                                                         self.val_labels_placeholder: self.train_labels})
 
             val_iterator_handle = self.sess.run(val_iterator.string_handle())
 
@@ -228,20 +287,21 @@ class Training:
 
         with tf.name_scope('optimizer'):
             # Create a training step counter.
-            global_step = tf.Variable(0, trainable=False, name='global_step')
-            # Get the learning rate placeholder from the optimizer object.
-            learning_rate = tf.get_default_graph().get_tensor_by_name('learning_rate:0')
+            global_step = tf.Variable(self.g_step, trainable=False, name='global_step')
             # Compute the regularizatin loss.
-            regularization_losses = self.model.losses # This is a list of the individual loss values, so we still need to sum them up.
-            regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
+            #TODO regularization_losses = self.model.losses # This is a list of the individual loss values, so we still need to sum them up.
+            #TODO regularization_loss = tf.add_n(regularization_losses, name='regularization_loss') # Scalar
             # Compute the total loss.
             approximation_loss = loss = tf.reduce_mean(tf.keras.backend.categorical_crossentropy(target=self.labels, output=self.model.output, from_logits=False), name='approximation_loss') # Scalar
-            total_loss = tf.add(approximation_loss, regularization_loss, name='total_loss')
+            #TODO total_loss = tf.add(approximation_loss, regularization_loss, name='total_loss')
+            total_loss = approximation_loss
             # Compute the gradients and apply them.
+            #TODO train_step = self.optimizer.get_updates(loss=total_loss, params=self.model.trainable_variables)
             grads_and_vars = self.optimizer.compute_gradients(loss=total_loss)
-            train_step = self.optimizer.apply_gradients(grads_and_vars, global_step=global_step, name='train_op')
+            train_step = self.optimizer.apply_gradients(grads_and_vars, global_step=global_step, name='train_step')
+            #TODO grads_and_vars = None
 
-        return total_loss, grads_and_vars, train_step, learning_rate, global_step
+        return total_loss, grads_and_vars, train_step, global_step
 
     def _build_predictor(self):
         '''
@@ -322,6 +382,32 @@ class Training:
 
             return gradient_mean_norms
 
+    def _build_gradient_metrics_antisymmetric(self):
+
+        gradient_mean_norms = []
+
+        with tf.name_scope('gradient_metrics'):
+
+            conv1_kernel_gradient, conv1_kernel_variable = self.grads_and_vars[0]
+            gradient_name = conv1_kernel_variable.name.split('/')[0] + '_kernel_gradient_mean_norm'
+            gradient_mean_norms.append(tf.identity(tf.norm(conv1_kernel_gradient, ord='euclidean') / tf.to_float(tf.size(conv1_kernel_gradient)), name=gradient_name))
+
+            for i in range(self.num_layers):
+
+                start_index = i*20+2
+                first_n = 19
+
+                # Transform and merge the gradients of the individual variables of this layer into one gradient.
+                block_gradients = [grad_and_var[0] for grad_and_var in self.grads_and_vars[start_index:start_index+first_n]]
+                block_gradients_flattened = [tf.reshape(gradient, shape=[-1]) for gradient in block_gradients]
+                block_gradients_merged = tf.concat(block_gradients_flattened, axis=0)
+
+                gradient_name = self.grads_and_vars[start_index][1].name.split('/')[0] + '_kernel_gradient_mean_norm'
+
+                gradient_mean_norms.append(tf.identity(tf.norm(block_gradients_merged, ord='euclidean') / tf.to_float(tf.size(block_gradients_merged)), name=gradient_name))
+
+            return gradient_mean_norms
+
     def _build_summary_ops(self):
         '''
         Build the part of the graph that logs summaries for TensorBoard.
@@ -343,7 +429,7 @@ class Training:
                                                                     order='euclidean'))
 
             # Summaries for learning rate and metrics.
-            training_summaries.append(tf.summary.scalar(name='learning_rate', tensor=self.learning_rate))
+            training_summaries.append(tf.summary.scalar(name='learning_rate', tensor=self.learning_rate_placeholder))
             training_summaries.append(tf.summary.scalar(name='mean_loss', tensor=self.mean_loss_value))
             training_summaries.append(tf.summary.scalar(name='accuracy', tensor=self.acc_value))
 
@@ -493,13 +579,14 @@ class Training:
 
                 if self.record_summaries and (self.g_step % summaries_frequency == 0):
                     ret = self.sess.run(fetches=self.fetches_summaries, feed_dict={self.iterator_handle: self.train_iterator_handle,
-                                                                                   self.learning_rate: learning_rate,
+                                                                                   self.learning_rate_placeholder: learning_rate,
                                                                                    tf.keras.backend.learning_phase(): 1})
                     self.training_writer.add_summary(summary=ret['training_summaries'], global_step=self.g_step)
-                    self.csv_writer.writerow([self.g_step - 1] + ret['gradient_mean_norms'])
+                    self.csv_writer_train.writerow([self.g_step] + ret['metric_values'] + ret['gradient_mean_norms'])
+                    self.csv_file_train.flush() #TODO
                 else:
                     ret = self.sess.run(fetches=self.fetches_no_summaries, feed_dict={self.iterator_handle: self.train_iterator_handle,
-                                                                                      self.learning_rate: learning_rate,
+                                                                                      self.learning_rate_placeholder: learning_rate,
                                                                                       tf.keras.backend.learning_phase(): 1})
                 self.g_step = ret['global_step']
                 self.variables_updated = True
@@ -527,6 +614,9 @@ class Training:
                 if self.record_summaries:
                     evaluation_summary = self.sess.run(self.evaluation_summaries)
                     self.evaluation_writer.add_summary(summary=evaluation_summary, global_step=self.g_step)
+
+                    self.csv_writer_val.writerow([self.g_step - 1] + self.metric_values)
+                    self.csv_file_val.flush()
 
             ####################################################################
             # Maybe save the model after this epoch.
@@ -781,5 +871,6 @@ class Training:
         '''
         self.sess.close()
         if self.record_summaries:
-            self.csv_file.close()
+            self.csv_file_train.close()
+            self.csv_file_val.close()
         print("The session has been closed.")
