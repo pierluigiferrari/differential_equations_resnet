@@ -59,6 +59,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
     def __init__(self,
                  kernel_size,
+                 gamma=0.0,
                  strides=(1, 1),
                  use_bias=True,
                  kernel_initializer='he_normal',
@@ -79,6 +80,7 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
 
         super(Conv2DAntisymmetric, self).__init__(**kwargs)
         self.kernel_size = kernel_size
+        self.gamma = gamma
         self.strides = strides
         self.use_bias = use_bias
         self.kernel_initializer = kernel_initializer
@@ -240,14 +242,19 @@ class Conv2DAntisymmetric(tf.keras.layers.Layer):
                     variable_array[self.kernel_size - 1 - i, self.kernel_size - 1 - j] = -variable if self.antisymmetric else variable
                 elif j == i and i == self.kernel_size // 2 and self.kernel_size % 2 == 1: # For matrices of odd size, this is the central element.
                     if self.antisymmetric:
-                        # For the anti-centrosymmetric case, the center element must be zero.
+                        # For the anti-centrosymmetric case, the center element must be constant (usually zero).
                         # This also implies that this element must be non-trainable.
+                        variable_array[i, j] = tf.fill(dims=[1, 1, 1, 1],
+                                                       value=self.gamma,
+                                                       name='{}_{}_{}'.format(prefix, i, j))
+                        '''
                         variable_array[i, j] = self.add_weight(name='{}_{}_{}'.format(prefix, i, j),
                                                                shape=[1, 1, 1, 1],
                                                                dtype=self.dtype,
-                                                               initializer=tf.initializers.zeros(dtype=self.dtype),
+                                                               initializer=tf.initializers.constant(value=self.gamma, dtype=self.dtype),
                                                                regularizer=None,
                                                                trainable=False) # Must be non-trainable.
+                        '''
                     else:
                         variable_array[i, j] = self.add_weight(name='{}_{}_{}'.format(prefix, i, j),
                                                                shape=[1, 1, 1, 1],

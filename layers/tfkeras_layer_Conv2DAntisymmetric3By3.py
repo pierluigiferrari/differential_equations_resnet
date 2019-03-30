@@ -58,6 +58,7 @@ class Conv2DAntisymmetric3By3(tf.keras.layers.Layer):
     '''
 
     def __init__(self,
+                 gamma=0.0,
                  strides=(1, 1),
                  use_bias=True,
                  kernel_initializer='he_normal',
@@ -75,6 +76,7 @@ class Conv2DAntisymmetric3By3(tf.keras.layers.Layer):
         '''
 
         super(Conv2DAntisymmetric3By3, self).__init__(**kwargs)
+        self.gamma = gamma
         self.strides = strides
         self.use_bias = use_bias
         self.kernel_initializer = kernel_initializer
@@ -242,13 +244,19 @@ class Conv2DAntisymmetric3By3(tf.keras.layers.Layer):
                                  regularizer=self.kernel_regularizer,
                                  trainable=self.trainable)
 
-        # 'e' constitutes the center element of the kernel, which must be zero and non-trainable.
+        # 'e' constitutes the center element of the kernel, which must be constant (usually zero) and non-trainable.
+        self.e = tf.fill(dims=[1, 1, 1, self.num_channels],
+                         value=self.gamma,
+                         name='e')
+
+        '''
         self.e = self.add_weight(name='e',
                                  shape=[1, 1, 1, self.num_channels],
                                  dtype=self.dtype,
-                                 initializer=tf.initializers.zeros(dtype=self.dtype),
+                                 initializer=tf.initializers.constant(value=self.gamma, dtype=self.dtype),
                                  regularizer=None,
                                  trainable=False)
+        '''
 
         # The remaining elements of the kernel are just the additive inverses of the previous elements.
         self.f = -self.d
